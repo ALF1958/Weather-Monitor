@@ -74,6 +74,8 @@ def load_config():
             {'name': 'Tokyo, Japan', 'lat': 35.6762, 'lon': 139.6503, 'country': 'JP'},
             {'name': 'Sydney, Australia', 'lat': -33.8688, 'lon': 151.2093, 'country': 'AU'},
             {'name': 'Toronto, Canada', 'lat': 43.6532, 'lon': -79.3832, 'country': 'CA'},
+            {'name': 'Corpus Christi, USA', 'lat': 27.5705, 'lon': -97.3964, 'country': 'US'},
+            {'name': 'Fort Hood, USA', 'lat': 31.1544, 'lon': -97.8072, 'country': 'US'},
         ]
     }
 
