@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Weather Monitor - Alerts for Severe Weather
-Monitors multiple locations and sends email alerts for severe weather conditions
+Weather Monitor - Alerts for Severe Weather & Advisories
+Monitors multiple locations and sends email alerts for severe weather conditions and official advisories
+Uses National Weather Service (NWS) for US locations and OpenWeatherMap for international locations
 """
 
 import os
@@ -25,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Severe weather conditions to monitor
+# Severe weather conditions to monitor (for non-US locations)
 SEVERE_WEATHER = {
     'Tornado',
     'Flood',
@@ -39,7 +40,10 @@ SEVERE_WEATHER = {
     'Blizzard',
     'Severe',
     'Warning',
-    'Alert'
+    'Alert',
+    'Fire',
+    'Smoke',
+    'Dust'
 }
 
 # Track sent alerts to avoid duplicates
@@ -65,11 +69,11 @@ def load_config():
         'sender_password': os.getenv('SENDER_PASSWORD'),
         'recipient_emails': os.getenv('RECIPIENT_EMAILS', '').split(','),
         'locations': [
-            {'name': 'New York, USA', 'lat': 40.7128, 'lon': -74.0060},
-            {'name': 'London, UK', 'lat': 51.5074, 'lon': -0.1278},
-            {'name': 'Tokyo, Japan', 'lat': 35.6762, 'lon': 139.6503},
-            {'name': 'Sydney, Australia', 'lat': -33.8688, 'lon': 151.2093},
-            {'name': 'Toronto, Canada', 'lat': 43.6532, 'lon': -79.3832},
+            {'name': 'New York, USA', 'lat': 40.7128, 'lon': -74.0060, 'country': 'US'},
+            {'name': 'London, UK', 'lat': 51.5074, 'lon': -0.1278, 'country': 'GB'},
+            {'name': 'Tokyo, Japan', 'lat': 35.6762, 'lon': 139.6503, 'country': 'JP'},
+            {'name': 'Sydney, Australia', 'lat': -33.8688, 'lon': 151.2093, 'country': 'AU'},
+            {'name': 'Toronto, Canada', 'lat': 43.6532, 'lon': -79.3832, 'country': 'CA'},
         ]
     }
 
@@ -92,6 +96,61 @@ def save_sent_alerts(alerts):
             json.dump(alerts, f, indent=2)
     except Exception as e:
         logger.error(f"Could not save sent alerts: {e}")
+
+
+def get_nws_alerts(lat, lon, location_name):
+    """Fetch alerts from National Weather Service (US only)"""
+    try:
+        # First, get the grid point for this location
+        points_url = f"https://api.weather.gov/points/{lat},{lon}"
+        points_response = requests.get(points_url, timeout=10)
+        points_response.raise_for_status()
+        points_data = points_response.json()
+        
+        # Get the alerts URL from the points data
+        alerts_url = points_data.get('properties', {}).get('alerts')
+        if not alerts_url:
+            logger.info(f"No alerts URL available for {location_name}")
+            return None
+        
+        # Fetch alerts
+        alerts_response = requests.get(alerts_url, timeout=10)
+        alerts_response.raise_for_status()
+        alerts_data = alerts_response.json()
+        
+        features = alerts_data.get('features', [])
+        if features:
+            logger.info(f"Found {len(features)} alerts for {location_name}")
+            return features
+        
+        return None
+    
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Error fetching NWS alerts for {location_name}: {e}")
+        return None
+
+
+def parse_nws_alerts(features):
+    """Parse NWS alert features into readable alerts"""
+    alerts = []
+    
+    for feature in features:
+        props = feature.get('properties', {})
+        
+        # Get alert details
+        event = props.get('event', 'Unknown Alert')
+        severity = props.get('severity', 'Unknown')
+        headline = props.get('headline', '')
+        description = props.get('description', '')
+        
+        # Only include alerts that are "Severe", "Extreme", or "Moderate"
+        if severity in ['Extreme', 'Severe', 'Moderate']:
+            alert_text = f"{event} ({severity})"
+            if headline:
+                alert_text += f": {headline}"
+            alerts.append(alert_text)
+    
+    return alerts if alerts else None
 
 
 def get_weather(api_key, lat, lon, location_name):
@@ -139,20 +198,20 @@ def check_severe_weather(weather_data):
     return conditions if conditions else None
 
 
-def send_alert_email(sender_email, sender_password, recipient_emails, location_name, conditions):
-    """Send email alert for severe weather"""
+def send_alert_email(sender_email, sender_password, recipient_emails, location_name, conditions, alert_type='Weather'):
+    """Send email alert for severe weather or advisories"""
     try:
         # Create email
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = ', '.join(recipient_emails)
-        msg['Subject'] = f"🚨 SEVERE WEATHER ALERT - {location_name}"
+        msg['Subject'] = f"🚨 {alert_type} ALERT - {location_name}"
         
         # Email body
         conditions_list = '\n'.join([f"  • {c}" for c in conditions])
         body = f"""
-SEVERE WEATHER ALERT
-====================
+{alert_type.upper()} ALERT
+{'=' * 50}
 
 Location: {location_name}
 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
@@ -172,11 +231,57 @@ Please take appropriate safety measures.
             server.login(sender_email, sender_password)
             server.send_message(msg)
         
-        logger.info(f"Alert sent for {location_name}: {', '.join(conditions)}")
+        logger.info(f"{alert_type} alert sent for {location_name}: {', '.join(conditions)}")
         return True
     
     except Exception as e:
         logger.error(f"Failed to send email alert: {e}")
+        return False
+
+
+def send_test_alert(sender_email, sender_password, recipient_emails):
+    """Send a test alert email"""
+    try:
+        # Create email
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = ', '.join(recipient_emails)
+        msg['Subject'] = "✅ Weather Monitor - Test Alert"
+        
+        # Email body
+        body = f"""
+WEATHER MONITOR TEST
+====================
+
+This is a test email from the Weather Monitor system.
+
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+
+✅ Email system is working correctly!
+Your weather alerts are configured and ready to receive notifications.
+
+Features:
+  • Monitors US locations for NWS official alerts
+  • Monitors international locations for severe weather
+  • Checks for: Tornadoes, Floods, Hurricanes, Fire, Winter Storms, Extreme Temperatures, and more
+  • Sends alerts every 15 minutes if conditions detected
+
+This is an automated message.
+        """
+        
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Send email
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+        
+        logger.info(f"Test alert sent successfully to {', '.join(recipient_emails)}")
+        return True
+    
+    except Exception as e:
+        logger.error(f"Failed to send test email alert: {e}")
         return False
 
 
@@ -201,6 +306,19 @@ def main():
         logger.error("No recipient emails configured")
         return
     
+    # Check if TEST_MODE is enabled
+    test_mode = os.getenv('TEST_MODE', 'false').lower() == 'true'
+    
+    if test_mode:
+        logger.info("🧪 TEST MODE ENABLED - Sending test alert...")
+        send_test_alert(
+            config['sender_email'],
+            config['sender_password'],
+            recipient_emails
+        )
+        logger.info("✅ Test alert sent! Check your inbox.")
+        return
+    
     locations = config.get('locations', [])
     if not locations:
         logger.error("No locations configured")
@@ -215,14 +333,41 @@ def main():
         location_name = location.get('name', 'Unknown')
         lat = location.get('lat')
         lon = location.get('lon')
+        country = location.get('country', 'XX')
         
         if lat is None or lon is None:
             logger.warning(f"Invalid coordinates for {location_name}")
             continue
         
-        logger.info(f"Checking weather for {location_name}...")
+        logger.info(f"Checking weather for {location_name} ({country})...")
         
-        # Get weather data
+        # Check if this is a US location - use NWS alerts
+        if country.upper() == 'US':
+            logger.info(f"Using National Weather Service for {location_name}...")
+            nws_features = get_nws_alerts(lat, lon, location_name)
+            
+            if nws_features:
+                nws_alerts = parse_nws_alerts(nws_features)
+                
+                if nws_alerts:
+                    # Create alert key to avoid duplicates
+                    alert_key = f"{location_name}_nws_{datetime.now().strftime('%Y-%m-%d')}"
+                    
+                    if alert_key not in sent_alerts:
+                        if send_alert_email(
+                            config['sender_email'],
+                            config['sender_password'],
+                            recipient_emails,
+                            location_name,
+                            nws_alerts,
+                            alert_type='NWS ADVISORY'
+                        ):
+                            sent_alerts[alert_key] = datetime.now().isoformat()
+                            alerts_sent += 1
+                    else:
+                        logger.info(f"NWS alert already sent for {location_name} today, skipping duplicate")
+        
+        # Always check OpenWeatherMap for severe weather conditions
         weather_data = get_weather(
             config['openweathermap_api_key'],
             lat,
@@ -230,29 +375,26 @@ def main():
             location_name
         )
         
-        if not weather_data:
-            continue
-        
-        # Check for severe weather
-        severe_conditions = check_severe_weather(weather_data)
-        
-        if severe_conditions:
-            # Create alert key to avoid duplicates
-            alert_key = f"{location_name}_{datetime.now().strftime('%Y-%m-%d')}"
+        if weather_data:
+            severe_conditions = check_severe_weather(weather_data)
             
-            if alert_key not in sent_alerts:
-                # Send email alert
-                if send_alert_email(
-                    config['sender_email'],
-                    config['sender_password'],
-                    recipient_emails,
-                    location_name,
-                    severe_conditions
-                ):
-                    sent_alerts[alert_key] = datetime.now().isoformat()
-                    alerts_sent += 1
-            else:
-                logger.info(f"Alert already sent for {location_name} today, skipping duplicate")
+            if severe_conditions:
+                # Create alert key to avoid duplicates
+                alert_key = f"{location_name}_weather_{datetime.now().strftime('%Y-%m-%d')}"
+                
+                if alert_key not in sent_alerts:
+                    if send_alert_email(
+                        config['sender_email'],
+                        config['sender_password'],
+                        recipient_emails,
+                        location_name,
+                        severe_conditions,
+                        alert_type='SEVERE WEATHER'
+                    ):
+                        sent_alerts[alert_key] = datetime.now().isoformat()
+                        alerts_sent += 1
+                else:
+                    logger.info(f"Weather alert already sent for {location_name} today, skipping duplicate")
     
     # Save sent alerts
     save_sent_alerts(sent_alerts)
