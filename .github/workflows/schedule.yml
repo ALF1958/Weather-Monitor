@@ -5,6 +5,15 @@ on:
     # every 15 minutes
     - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Send test alert email'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   run-monitor:
@@ -26,5 +35,6 @@ jobs:
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAILS: ${{ secrets.RECIPIENT_EMAILS }}
           CONFIG_PATH: config.example.json
+          TEST_MODE: ${{ github.event.inputs.test_mode }}
         run: |
           python weather_monitor.py
