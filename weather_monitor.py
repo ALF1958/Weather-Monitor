@@ -9,7 +9,9 @@ import os
 import json
 import logging
 import smtplib
-from datetime import datetime, timedelta
+import hashlib
+import re
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -63,6 +65,37 @@ CRITICAL_ALERT_TYPES = {
     'Heavy Snow Watch',
 }
 
+# Additional keywords for significant alerts across providers (case-insensitive)
+SIGNIFICANT_ALERT_KEYWORDS = {
+    'tornado',
+    'flood',
+    'flash flood',
+    'severe thunderstorm',
+    'hurricane',
+    'tropical storm',
+    'winter storm',
+    'blizzard',
+    'ice storm',
+    'high wind',
+    'extreme cold',
+    'extreme heat',
+    'heat advisory',
+    'red flag',
+    'fire weather',
+    'avalanche',
+    'air quality',
+    'lightning',
+    'hail',
+}
+
+SIGNIFICANT_ALERT_PATTERNS = [
+    re.compile(
+        rf"\b{re.escape(keyword).replace(' ', r'[\s-]*')}\b",
+        re.IGNORECASE
+    )
+    for keyword in SIGNIFICANT_ALERT_KEYWORDS
+]
+
 # Track sent alerts to avoid duplicates
 SENT_ALERTS_FILE = 'sent_alerts.json'
 
@@ -73,6 +106,27 @@ NWS_CACHE_TTL_HOURS = int(os.getenv('NWS_CACHE_TTL_HOURS', '24'))
 
 # In-memory cache for runtime as well
 NWS_POINTS_CACHE = {}
+
+
+def make_stable_alert_id(*parts):
+    """Create a stable alert identifier from provider-specific stable fields."""
+    normalized = json.dumps([str(part or '').strip() for part in parts], ensure_ascii=True, separators=(',', ':'))
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
+def normalize_country(country_value):
+    """Normalize country value for comparison."""
+    return (country_value or 'UNSPECIFIED').upper()
+
+
+def timestamp_to_utc_iso(timestamp):
+    """Convert epoch timestamp to UTC ISO string safely."""
+    if not isinstance(timestamp, (int, float)):
+        return 'Unknown'
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return 'Unknown'
 
 
 def load_config():
@@ -203,6 +257,23 @@ def make_nws_session(contact=None):
     return sess
 
 
+def make_owm_session():
+    """Create and return a requests.Session configured for OpenWeatherMap usage."""
+    sess = requests.Session()
+
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    sess.mount('https://', adapter)
+    sess.mount('http://', adapter)
+
+    return sess
+
+
 def get_nws_alerts(lat, lon, location_name, session=None):
     """Fetch alerts from National Weather Service (US only).
 
@@ -263,6 +334,43 @@ def get_nws_alerts(lat, lon, location_name, session=None):
         return None
 
 
+def get_openweathermap_alerts(lat, lon, location_name, api_key, session=None):
+    """Fetch alerts from OpenWeatherMap One Call API (global coverage)."""
+    sess = session or make_owm_session()
+
+    try:
+        endpoint = "https://api.openweathermap.org/data/3.0/onecall"
+        params = {
+            'lat': lat,
+            'lon': lon,
+            'appid': api_key,
+        }
+
+        response = sess.get(endpoint, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        alerts = data.get('alerts', [])
+        if alerts:
+            logger.info(f"Found {len(alerts)} OpenWeatherMap alerts for {location_name}")
+            return alerts
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Error fetching OpenWeatherMap alerts for {location_name}: {e}")
+        return None
+
+
+def is_significant_alert(event, headline='', description='', tags=None):
+    """Return True when an alert matches significant event types or keywords."""
+    if event in CRITICAL_ALERT_TYPES:
+        return True
+
+    tags = tags or []
+    combined_text = f"{event or ''} {headline or ''} {description or ''} {' '.join(tags)}"
+    return any(pattern.search(combined_text) for pattern in SIGNIFICANT_ALERT_PATTERNS)
+
+
 def parse_nws_alerts(features):
     """Parse NWS alert features into critical alerts only"""
     alerts = []
@@ -277,17 +385,59 @@ def parse_nws_alerts(features):
         effective = props.get('effective', '')
         expires = props.get('expires', '')
 
-        # ONLY include critical alert types
-        if event in CRITICAL_ALERT_TYPES:
+        description = props.get('description', '')
+
+        # Include significant alert types
+        if is_significant_alert(event, headline=headline, description=description):
             alert_text = f"{event} ({severity})"
             if headline:
                 alert_text += f"\n{headline}"
             if effective or expires:
                 alert_text += f"\nEffective: {effective} | Expires: {expires}"
-            alerts.append(alert_text)
-            logger.info(f"Critical alert identified: {event} for {props.get('areaDesc', 'Unknown area')}")
+            alert_id = feature.get('id') or props.get('id') or make_stable_alert_id(event, props.get('areaDesc', ''), headline, effective)
+
+            alerts.append({
+                'id': alert_id,
+                'event': event,
+                'text': alert_text,
+            })
+            logger.info(f"Significant alert identified: {event} for {props.get('areaDesc', 'Unknown area')}")
         else:
-            logger.debug(f"Non-critical alert filtered out: {event}")
+            logger.debug(f"Non-significant alert filtered out: {event}")
+
+    return alerts if alerts else None
+
+
+def parse_openweathermap_alerts(raw_alerts):
+    """Parse OpenWeatherMap alert payload into significant alerts only."""
+    alerts = []
+
+    for raw_alert in raw_alerts:
+        event = raw_alert.get('event', 'Weather Alert')
+        sender = raw_alert.get('sender_name', 'Unknown sender')
+        description = raw_alert.get('description', '')
+        start_ts = raw_alert.get('start')
+        end_ts = raw_alert.get('end')
+        tags = raw_alert.get('tags', [])
+
+        if not is_significant_alert(event, description=description, tags=tags):
+            logger.debug(f"OpenWeatherMap non-significant alert filtered out: {event}")
+            continue
+
+        start_text = timestamp_to_utc_iso(start_ts)
+        end_text = timestamp_to_utc_iso(end_ts)
+        alert_text = f"{event}\nSource: {sender}\nEffective: {start_text} | Expires: {end_text}"
+        if description:
+            alert_text += f"\n{description}"
+
+        alert_id = make_stable_alert_id(event, sender, start_ts)
+
+        alerts.append({
+            'id': alert_id,
+            'event': event,
+            'text': alert_text,
+        })
+        logger.info(f"Significant OpenWeatherMap alert identified: {event}")
 
     return alerts if alerts else None
 
@@ -387,10 +537,6 @@ def main():
     config = load_config()
 
     # Validate required fields
-    if not config.get('openweathermap_api_key'):
-        logger.error("OPENWEATHERMAP_API_KEY not set")
-        return
-
     if not config.get('sender_email') or not config.get('sender_password'):
         logger.error("Email credentials not set")
         return
@@ -400,9 +546,21 @@ def main():
         logger.error("No recipient emails configured")
         return
 
+    locations = config.get('locations', [])
+    if not locations:
+        logger.error("No locations configured")
+        return
+
+    has_non_us_locations = any(normalize_country(loc.get('country')) != 'US' for loc in locations)
+    openweathermap_api_key = config.get('openweathermap_api_key')
+    if has_non_us_locations and not openweathermap_api_key:
+        logger.error("OPENWEATHERMAP_API_KEY not set (required for non-US locations)")
+        return
+
     # Create an NWS session with proper headers (User-Agent + Accept)
     nws_contact = config.get('nws_contact') or os.getenv('NWS_CONTACT')
     nws_session = make_nws_session(nws_contact)
+    owm_session = make_owm_session()
 
     # Check if TEST_MODE is enabled
     test_mode = os.getenv('TEST_MODE', 'false').lower() == 'true'
@@ -417,11 +575,6 @@ def main():
         logger.info("✅ Test alert sent! Check your inbox.")
         return
 
-    locations = config.get('locations', [])
-    if not locations:
-        logger.error("No locations configured")
-        return
-
     # Load previously sent alerts
     sent_alerts = load_sent_alerts()
 
@@ -431,7 +584,7 @@ def main():
         location_name = location.get('name', 'Unknown')
         lat = location.get('lat')
         lon = location.get('lon')
-        country = location.get('country', 'XX')
+        country = normalize_country(location.get('country'))
 
         if lat is None or lon is None:
             logger.warning(f"Invalid coordinates for {location_name}")
@@ -448,12 +601,9 @@ def main():
                 nws_alerts = parse_nws_alerts(nws_features)
 
                 if nws_alerts:
-                    # Create unique alert keys for each alert
-                    for alert_text in nws_alerts:
-                        # Extract event type from alert text (first line)
-                        event_type = alert_text.split('\n')[0].split('(')[0].strip()
-                        # Use event type + location + timestamp for uniqueness
-                        alert_key = f"{location_name}_{event_type}_{datetime.now().strftime('%Y-%m-%d-%H:%M')}"
+                    # Create stable alert keys for each provider alert
+                    for alert in nws_alerts:
+                        alert_key = f"NWS::{location_name}::{alert['id']}"
 
                         if alert_key not in sent_alerts:
                             if send_alert_email(
@@ -461,24 +611,54 @@ def main():
                                 config['sender_password'],
                                 recipient_emails,
                                 location_name,
-                                [alert_text],
-                                alert_type=event_type
+                                [alert['text']],
+                                alert_type=alert['event']
                             ):
                                 sent_alerts[alert_key] = datetime.now().isoformat()
                                 alerts_sent += 1
                         else:
                             logger.debug(f"Alert already processed: {alert_key}")
                 else:
-                    logger.info(f"No critical alerts for {location_name}")
+                    logger.info(f"No significant alerts for {location_name}")
             else:
                 logger.info(f"No alerts returned from NWS for {location_name}")
         else:
-            logger.debug(f"Skipping {location_name} - only US locations use NWS alerts")
+            logger.info(f"Fetching OpenWeatherMap alerts for {location_name}...")
+            owm_raw_alerts = get_openweathermap_alerts(
+                lat,
+                lon,
+                location_name,
+                openweathermap_api_key,
+                session=owm_session
+            )
+
+            if owm_raw_alerts:
+                owm_alerts = parse_openweathermap_alerts(owm_raw_alerts)
+                if owm_alerts:
+                    for alert in owm_alerts:
+                        alert_key = f"OWM::{location_name}::{alert['id']}"
+                        if alert_key not in sent_alerts:
+                            if send_alert_email(
+                                config['sender_email'],
+                                config['sender_password'],
+                                recipient_emails,
+                                location_name,
+                                [alert['text']],
+                                alert_type=alert['event']
+                            ):
+                                sent_alerts[alert_key] = datetime.now().isoformat()
+                                alerts_sent += 1
+                        else:
+                            logger.debug(f"Alert already processed: {alert_key}")
+                else:
+                    logger.info(f"No significant alerts for {location_name}")
+            else:
+                logger.info(f"No alerts returned from OpenWeatherMap for {location_name}")
 
     # Save sent alerts
     save_sent_alerts(sent_alerts)
 
-    logger.info(f"Alert check complete. Critical alerts sent: {alerts_sent}")
+    logger.info(f"Alert check complete. Significant alerts sent: {alerts_sent}")
 
 
 if __name__ == '__main__':
