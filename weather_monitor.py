@@ -147,12 +147,11 @@ def parse_nws_alerts(features):
         headline = props.get('headline', '')
         description = props.get('description', '')
         
-        # Only include alerts that are "Severe", "Extreme", or "Moderate"
-        if severity in ['Extreme', 'Severe', 'Moderate']:
-            alert_text = f"{event} ({severity})"
-            if headline:
-                alert_text += f": {headline}"
-            alerts.append(alert_text)
+        # Include ALL alerts - no severity filtering
+        alert_text = f"{event} ({severity})"
+        if headline:
+            alert_text += f": {headline}"
+        alerts.append(alert_text)
     
     return alerts if alerts else None
 
@@ -170,34 +169,55 @@ def get_weather(api_key, lat, lon, location_name):
 
 
 def check_severe_weather(weather_data):
-    """Check if weather contains severe conditions"""
+    """Check if weather contains severe conditions - no filtering, capture all weather"""
     if not weather_data:
         return None
     
     conditions = []
     
-    # Check main weather condition
-    main = weather_data.get('weather', [{}])[0].get('main', '').lower()
-    description = weather_data.get('weather', [{}])[0].get('description', '').lower()
+    # Get all weather conditions (not just the first)
+    weather_list = weather_data.get('weather', [])
+    for weather in weather_list:
+        main = weather.get('main', '')
+        description = weather.get('description', '')
+        if main or description:
+            conditions.append(f"{main}: {description}" if main != description else (main or description))
     
-    # Check for severe weather keywords
-    for condition in SEVERE_WEATHER:
-        if condition.lower() in main or condition.lower() in description:
-            conditions.append(weather_data.get('weather', [{}])[0].get('description', condition))
-    
-    # Check temperature extremes
+    # Check temperature
     temp_k = weather_data.get('main', {}).get('temp', 0)
     temp_c = temp_k - 273.15
+    temp_f = (temp_c * 9/5) + 32
+    conditions.append(f"Temperature: {temp_c:.1f}°C ({temp_f:.1f}°F)")
     
-    if temp_c < -30:
-        conditions.append(f"Extreme Cold ({temp_c:.1f}°C)")
-    elif temp_c > 45:
-        conditions.append(f"Extreme Heat ({temp_c:.1f}°C)")
-    
-    # Check wind speed (hurricane threshold ~32.7 m/s)
+    # Check wind speed
     wind_speed = weather_data.get('wind', {}).get('speed', 0)
-    if wind_speed > 32.7:
-        conditions.append(f"Hurricane-force winds ({wind_speed:.1f} m/s)")
+    conditions.append(f"Wind Speed: {wind_speed:.1f} m/s")
+    
+    # Check pressure
+    pressure = weather_data.get('main', {}).get('pressure', 0)
+    conditions.append(f"Pressure: {pressure} hPa")
+    
+    # Check humidity
+    humidity = weather_data.get('main', {}).get('humidity', 0)
+    conditions.append(f"Humidity: {humidity}%")
+    
+    # Check cloud coverage
+    clouds = weather_data.get('clouds', {}).get('all', 0)
+    conditions.append(f"Cloud Coverage: {clouds}%")
+    
+    # Check visibility
+    visibility = weather_data.get('visibility', 0)
+    if visibility > 0:
+        conditions.append(f"Visibility: {visibility} meters")
+    
+    # Check rain/snow
+    rain = weather_data.get('rain', {}).get('1h', 0)
+    if rain > 0:
+        conditions.append(f"Rain (1h): {rain} mm")
+    
+    snow = weather_data.get('snow', {}).get('1h', 0)
+    if snow > 0:
+        conditions.append(f"Snow (1h): {snow} mm")
     
     return conditions if conditions else None
 
@@ -265,10 +285,10 @@ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
 Your weather alerts are configured and ready to receive notifications.
 
 Features:
-  • Monitors US locations for NWS official alerts
-  • Monitors international locations for severe weather
-  • Checks for: Tornadoes, Floods, Hurricanes, Fire, Winter Storms, Extreme Temperatures, and more
-  • Sends alerts every 15 minutes if conditions detected
+  • Monitors US locations for NWS official alerts (ALL alerts, no filtering)
+  • Monitors all locations for OpenWeatherMap conditions (ALL conditions, no filtering)
+  • Checks for: Temperature, Wind Speed, Pressure, Humidity, Cloud Coverage, Visibility, Rain, Snow, and more
+  • Sends alerts every 15 minutes with current conditions
 
 This is an automated message.
         """
@@ -371,7 +391,7 @@ def main():
                     else:
                         logger.info(f"NWS alert already sent for {location_name} today, skipping duplicate")
         
-        # Always check OpenWeatherMap for severe weather conditions
+        # Always check OpenWeatherMap for weather conditions
         weather_data = get_weather(
             config['openweathermap_api_key'],
             lat,
@@ -380,9 +400,9 @@ def main():
         )
         
         if weather_data:
-            severe_conditions = check_severe_weather(weather_data)
+            conditions = check_severe_weather(weather_data)
             
-            if severe_conditions:
+            if conditions:
                 # Create alert key to avoid duplicates
                 alert_key = f"{location_name}_weather_{datetime.now().strftime('%Y-%m-%d')}"
                 
@@ -392,8 +412,8 @@ def main():
                         config['sender_password'],
                         recipient_emails,
                         location_name,
-                        severe_conditions,
-                        alert_type='SEVERE WEATHER'
+                        conditions,
+                        alert_type='WEATHER CONDITIONS'
                     ):
                         sent_alerts[alert_key] = datetime.now().isoformat()
                         alerts_sent += 1
