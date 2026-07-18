@@ -9,11 +9,13 @@ import os
 import json
 import logging
 import smtplib
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Setup logging
 logging.basicConfig(
@@ -64,7 +66,12 @@ CRITICAL_ALERT_TYPES = {
 # Track sent alerts to avoid duplicates
 SENT_ALERTS_FILE = 'sent_alerts.json'
 
-# In-memory cache for NWS points -> alerts URL to reduce /points calls per run
+# Persistent cache file for NWS /points -> alerts URL (reduces calls across runs)
+NWS_POINTS_CACHE_FILE = 'nws_points_cache.json'
+# Default TTL for cached points (hours)
+NWS_CACHE_TTL_HOURS = int(os.getenv('NWS_CACHE_TTL_HOURS', '24'))
+
+# In-memory cache for runtime as well
 NWS_POINTS_CACHE = {}
 
 
@@ -122,6 +129,44 @@ def save_sent_alerts(alerts):
         logger.error(f"Could not save sent alerts: {e}")
 
 
+def load_nws_points_cache():
+    """Load persistent NWS points cache from disk into NWS_POINTS_CACHE (in-memory)."""
+    global NWS_POINTS_CACHE
+    if os.path.exists(NWS_POINTS_CACHE_FILE):
+        try:
+            with open(NWS_POINTS_CACHE_FILE, 'r') as f:
+                data = json.load(f)
+                NWS_POINTS_CACHE = data
+        except Exception as e:
+            logger.warning(f"Could not load NWS points cache: {e}")
+            NWS_POINTS_CACHE = {}
+    else:
+        NWS_POINTS_CACHE = {}
+
+
+def save_nws_points_cache():
+    """Persist the in-memory NWS_POINTS_CACHE to disk."""
+    try:
+        with open(NWS_POINTS_CACHE_FILE, 'w') as f:
+            json.dump(NWS_POINTS_CACHE, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not save NWS points cache: {e}")
+
+
+def is_cache_entry_valid(entry):
+    """Return True if a cache entry is still valid according to TTL."""
+    try:
+        cached_at = entry.get('cached_at')
+        if not cached_at:
+            return False
+        ts = datetime.fromisoformat(cached_at)
+        if datetime.utcnow() - ts <= timedelta(hours=NWS_CACHE_TTL_HOURS):
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def make_nws_session(contact=None):
     """Create and return a requests.Session configured for NWS API usage.
 
@@ -130,15 +175,31 @@ def make_nws_session(contact=None):
     via the NWS_CONTACT env var or the config (nws_contact). If no contact is
     provided, a generic contact token is used, but it's recommended to set a
     real email or URL.
+
+    This session also installs a Retry/HTTPAdapter to provide basic retry and
+    backoff (handles transient errors and HTTP 429/5xx responses).
     """
     sess = requests.Session()
     contact_val = contact or os.getenv('NWS_CONTACT') or 'ALF1958'
     user_agent = f"Weather Monitor/1.0 ({contact_val})"
+
     headers = {
         'User-Agent': user_agent,
         'Accept': 'application/geo+json',
     }
     sess.headers.update(headers)
+
+    # Configure retries: handle 429 and common server errors with backoff
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    sess.mount('https://', adapter)
+    sess.mount('http://', adapter)
+
     return sess
 
 
@@ -146,15 +207,24 @@ def get_nws_alerts(lat, lon, location_name, session=None):
     """Fetch alerts from National Weather Service (US only).
 
     Uses a requests.Session with appropriate User-Agent and Accept headers.
-    Caches the points -> alerts URL mapping for the lifetime of the process to
-    reduce calls to /points for the same coordinates.
+    Caches the points -> alerts URL mapping on-disk to reduce calls to /points
+    across runs. The persistent cache respects a TTL (default 24 hours) and is
+    configurable via NWS_CACHE_TTL_HOURS env var.
     """
     sess = session or make_nws_session()
     cache_key = f"{lat},{lon}"
 
     try:
-        # Check cache for alerts URL
-        alerts_url = NWS_POINTS_CACHE.get(cache_key)
+        # Load persistent cache into memory once
+        if not NWS_POINTS_CACHE:
+            load_nws_points_cache()
+
+        alerts_url = None
+        entry = NWS_POINTS_CACHE.get(cache_key)
+        if entry and is_cache_entry_valid(entry):
+            alerts_url = entry.get('alerts_url')
+            logger.debug(f"Using cached alerts URL for {location_name}")
+
         if not alerts_url:
             # Get the grid point for this location
             points_url = f"https://api.weather.gov/points/{lat},{lon}"
@@ -168,8 +238,13 @@ def get_nws_alerts(lat, lon, location_name, session=None):
                 logger.info(f"No alerts URL available for {location_name}")
                 return None
 
-            # Cache the alerts URL for this lat/lon for this run
-            NWS_POINTS_CACHE[cache_key] = alerts_url
+            # Cache the alerts URL with timestamp
+            NWS_POINTS_CACHE[cache_key] = {
+                'alerts_url': alerts_url,
+                'cached_at': datetime.utcnow().isoformat()
+            }
+            # Persist updated cache
+            save_nws_points_cache()
 
         # Fetch alerts
         alerts_response = sess.get(alerts_url, timeout=10)
