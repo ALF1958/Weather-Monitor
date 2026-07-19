@@ -66,7 +66,7 @@ CRITICAL_ALERT_TYPES = {
 # Track sent alerts to avoid duplicates
 SENT_ALERTS_FILE = 'sent_alerts.json'
 
-# Persistent cache file for NWS /points -> alerts URL (reduces calls across runs)
+# Persistent cache file for legacy NWS /points -> alerts URL fallback data
 NWS_POINTS_CACHE_FILE = 'nws_points_cache.json'
 # Default TTL for cached points (hours)
 NWS_CACHE_TTL_HOURS = int(os.getenv('NWS_CACHE_TTL_HOURS', '24'))
@@ -203,13 +203,55 @@ def make_nws_session(contact=None):
     return sess
 
 
+def fetch_nws_alert_features(sess, alerts_url, location_name):
+    """Fetch and return raw NWS alert features from a specific alerts URL."""
+    alerts_response = sess.get(alerts_url, timeout=10)
+    alerts_response.raise_for_status()
+    alerts_data = alerts_response.json()
+
+    features = alerts_data.get('features', [])
+    if features:
+        logger.info(f"Found {len(features)} alerts for {location_name}")
+        return features
+
+    return None
+
+
+def get_legacy_nws_alerts_url(lat, lon, cache_key, location_name, session):
+    """Get a legacy NWS alerts URL for fallback purposes."""
+    entry = NWS_POINTS_CACHE.get(cache_key)
+    if entry and is_cache_entry_valid(entry):
+        alerts_url = entry.get('alerts_url')
+        if alerts_url:
+            logger.debug(f"Using cached legacy alerts URL for {location_name}")
+            return alerts_url
+
+    points_url = f"https://api.weather.gov/points/{lat},{lon}"
+    points_response = session.get(points_url, timeout=10)
+    points_response.raise_for_status()
+    points_data = points_response.json()
+
+    alerts_url = points_data.get('properties', {}).get('alerts')
+    if not alerts_url:
+        return None
+
+    NWS_POINTS_CACHE[cache_key] = {
+        'alerts_url': alerts_url,
+        'cached_at': datetime.utcnow().isoformat()
+    }
+    save_nws_points_cache()
+    return alerts_url
+
+
 def get_nws_alerts(lat, lon, location_name, session=None):
     """Fetch alerts from National Weather Service (US only).
 
     Uses a requests.Session with appropriate User-Agent and Accept headers.
-    Caches the points -> alerts URL mapping on-disk to reduce calls to /points
-    across runs. The persistent cache respects a TTL (default 24 hours) and is
-    configurable via NWS_CACHE_TTL_HOURS env var.
+    First queries the NWS active alerts endpoint by point, which correctly
+    matches locations such as Fort Campbell. If that request fails, it falls
+    back to the legacy /points -> alerts URL flow and uses the persistent cache
+    for that fallback path. The persistent cache respects a TTL (default 24
+    hours) and is configurable via NWS_CACHE_TTL_HOURS env var.
     """
     sess = session or make_nws_session()
     cache_key = f"{lat},{lon}"
@@ -219,45 +261,20 @@ def get_nws_alerts(lat, lon, location_name, session=None):
         if not NWS_POINTS_CACHE:
             load_nws_points_cache()
 
-        alerts_url = None
-        entry = NWS_POINTS_CACHE.get(cache_key)
-        if entry and is_cache_entry_valid(entry):
-            alerts_url = entry.get('alerts_url')
-            logger.debug(f"Using cached alerts URL for {location_name}")
+        point_alerts_url = f"https://api.weather.gov/alerts/active?point={lat},{lon}"
+        try:
+            return fetch_nws_alert_features(sess, point_alerts_url, location_name)
+        except requests.exceptions.RequestException as point_error:
+            logger.warning(
+                f"Point-based NWS alert lookup failed for {location_name}: {point_error}"
+            )
 
+        alerts_url = get_legacy_nws_alerts_url(lat, lon, cache_key, location_name, sess)
         if not alerts_url:
-            # Get the grid point for this location
-            points_url = f"https://api.weather.gov/points/{lat},{lon}"
-            points_response = sess.get(points_url, timeout=10)
-            points_response.raise_for_status()
-            points_data = points_response.json()
+            logger.info(f"No legacy alerts URL available for {location_name}")
+            return None
 
-            # Get the alerts URL from the points data
-            alerts_url = points_data.get('properties', {}).get('alerts')
-            if not alerts_url:
-                logger.info(f"No alerts URL available for {location_name}")
-                return None
-
-            # Cache the alerts URL with timestamp
-            NWS_POINTS_CACHE[cache_key] = {
-                'alerts_url': alerts_url,
-                'cached_at': datetime.utcnow().isoformat()
-            }
-            # Persist updated cache
-            save_nws_points_cache()
-
-        # Fetch alerts
-        alerts_response = sess.get(alerts_url, timeout=10)
-        alerts_response.raise_for_status()
-        alerts_data = alerts_response.json()
-
-        features = alerts_data.get('features', [])
-        if features:
-            logger.info(f"Found {len(features)} alerts for {location_name}")
-            return features
-
-        return None
-
+        return fetch_nws_alert_features(sess, alerts_url, location_name)
     except requests.exceptions.RequestException as e:
         logger.warning(f"Error fetching NWS alerts for {location_name}: {e}")
         return None
