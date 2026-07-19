@@ -420,10 +420,18 @@ def get_nws_alerts(lat, lon, location_name, session=None):
 
 
 def parse_nws_alerts(features):
-    """Parse NWS alert features into critical alerts with stable identifiers.
+    """Find critical alerts and prepare alert details for email.
 
-    Matching is case-insensitive and allows critical phrases as substrings in
-    the NWS event text (for example, "Tornado Warning for Northern Area").
+    "Critical alerts" here means severe events such as tornadoes, floods,
+    and other dangerous weather listed in CRITICAL_ALERT_TYPES.
+    Matching uses a case-insensitive substring check.
+    "Case-insensitive" means it matches words no matter how they are
+    capitalized (for example, "tornado warning" or "Tornado Warning").
+    A "substring check" means it looks for a critical alert name anywhere
+    inside the full event text.
+    It also allows extra words in the event text, such as
+    "Tornado Warning for Northern Area".
+    Returns a list of alert dictionaries (id, event_type, text, area).
     """
     alerts = []
 
@@ -463,11 +471,18 @@ def parse_nws_alerts(features):
 
 
 def build_nws_alert_id(feature, props, event, effective, expires, area_desc):
-    """Build a stable alert ID from NWS payload data.
+    """Create a unique ID for one NWS alert.
 
-    Prefer NWS-provided IDs from feature/properties payloads. If no NWS ID is
-    present, return a deterministic fallback ID with the prefix "fallback-"
-    followed by a SHA256 hash of key alert fields.
+    First, this tries to use the official ID sent by NWS
+    (for example: "NWS-ALERTS-AL12345").
+    NWS may send that ID inside a full URL, and this function keeps only the
+    last part of the URL so the saved key stays short and consistent.
+    Example: from "https://api.weather.gov/alerts/NWS-ALERTS-AL12345",
+    it keeps "NWS-ALERTS-AL12345".
+    If NWS does not provide an ID, it builds a backup ID that stays the same
+    for the same alert details by turning those details into a unique code
+    using a SHA-256 hash function, so duplicate emails are avoided.
+    Returns the alert ID as a string.
     """
     feature_id = feature.get('id', '') or props.get('id', '')
     alert_id = feature_id.split('/')[-1] if feature_id else ''
