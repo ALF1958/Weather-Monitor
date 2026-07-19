@@ -31,7 +31,7 @@ class TestGetNwsAlerts(unittest.TestCase):
 
     @patch("weather_monitor.load_nws_points_cache")
     @patch("weather_monitor.save_nws_points_cache")
-    def test_get_nws_alerts_falls_back_to_legacy_points_lookup(self, mock_save_cache, mock_load_cache):
+    def test_get_nws_alerts_falls_back_to_legacy_when_point_lookup_fails(self, mock_save_cache, mock_load_cache):
         session = Mock()
 
         point_failure = requests.exceptions.RequestException("point lookup failed")
