@@ -418,7 +418,7 @@ def get_nws_alerts(lat, lon, location_name, session=None):
 
 
 def parse_nws_alerts(features):
-    """Parse NWS alert features into critical alerts only"""
+    """Parse NWS alert features into critical alerts with stable identifiers."""
     alerts = []
 
     for feature in features:
@@ -430,16 +430,30 @@ def parse_nws_alerts(features):
         headline = props.get('headline', '')
         effective = props.get('effective', '')
         expires = props.get('expires', '')
+        area_desc = props.get('areaDesc', 'Unknown area')
+        feature_id = feature.get('id', '') or props.get('id', '')
+        alert_id = feature_id.split('/')[-1] if feature_id else ''
+
+        if not alert_id:
+            alert_id = f"{event}|{effective}|{expires}|{area_desc}"
+
+        event_lower = event.lower()
+        critical_match = any(critical.lower() in event_lower for critical in CRITICAL_ALERT_TYPES)
 
         # ONLY include critical alert types
-        if event in CRITICAL_ALERT_TYPES:
+        if critical_match:
             alert_text = f"{event} ({severity})"
             if headline:
                 alert_text += f"\n{headline}"
             if effective or expires:
                 alert_text += f"\nEffective: {effective} | Expires: {expires}"
-            alerts.append(alert_text)
-            logger.info(f"Critical alert identified: {event} for {props.get('areaDesc', 'Unknown area')}")
+            alerts.append({
+                'id': alert_id,
+                'event_type': event,
+                'text': alert_text,
+                'area': area_desc,
+            })
+            logger.info(f"Critical alert identified: {event} for {area_desc}")
         else:
             logger.debug(f"Non-critical alert filtered out: {event}")
 
@@ -603,11 +617,12 @@ def main():
 
                 if nws_alerts:
                     # Create unique alert keys for each alert
-                    for alert_text in nws_alerts:
-                        # Extract event type from alert text (first line)
-                        event_type = alert_text.split('\n')[0].split('(')[0].strip()
-                        # Use event type + location + timestamp for uniqueness
-                        alert_key = f"{location_name}_{event_type}_{datetime.now().strftime('%Y-%m-%d-%H:%M')}"
+                    for alert_data in nws_alerts:
+                        event_type = alert_data.get('event_type', 'NWS Alert')
+                        alert_id = alert_data.get('id', '')
+                        alert_text = alert_data.get('text', '')
+                        # Use location + stable NWS alert identifier for uniqueness
+                        alert_key = f"{location_name}_{alert_id}"
 
                         if alert_key not in sent_alerts:
                             if send_alert_email(
@@ -618,7 +633,7 @@ def main():
                                 [alert_text],
                                 alert_type=event_type
                             ):
-                                sent_alerts[alert_key] = datetime.now().isoformat()
+                                sent_alerts[alert_key] = datetime.now(UTC).isoformat()
                                 alerts_sent += 1
                         else:
                             logger.debug(f"Alert already processed: {alert_key}")
