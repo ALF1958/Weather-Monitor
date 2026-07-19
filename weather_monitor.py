@@ -207,7 +207,10 @@ def make_nws_session(contact=None):
 
 
 def fetch_nws_alert_features(session, alerts_url, location_name):
-    """Fetch and return raw NWS alert features from a specific NWS alerts URL."""
+    """Fetch and return raw NWS alert features from a specific NWS alerts URL.
+
+    In the NWS API, "features" are the individual alert objects in the response.
+    """
     alerts_response = session.get(alerts_url, timeout=10)
     alerts_response.raise_for_status()
     alerts_data = alerts_response.json()
@@ -221,7 +224,11 @@ def fetch_nws_alert_features(session, alerts_url, location_name):
 
 
 def get_legacy_nws_alerts_url(lat, lon, cache_key, location_name, session):
-    """Get the older /points-based NWS alerts URL used as a fallback."""
+    """Get the older /points-based NWS alerts URL used as a fallback.
+
+    This backup path asks the /points endpoint for a zone-specific alerts URL.
+    It is only used when the newer point-based alert lookup fails.
+    """
     entry = NWS_POINTS_CACHE.get(cache_key)
     if entry and is_cache_entry_valid(entry):
         alerts_url = entry.get('alerts_url')

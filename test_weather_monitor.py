@@ -48,6 +48,8 @@ class GetNwsAlertsTests(unittest.TestCase):
             "features": [{"properties": {"event": "Flood Warning"}}]
         }
 
+        # Each mocked request uses the next item: fail point lookup, then return
+        # the legacy /points response, then return the legacy alerts response.
         session.get.side_effect = [point_failure, points_response, alerts_response]
 
         features = weather_monitor.get_nws_alerts(36.6260, -87.4660, "Fort Campbell", session=session)
