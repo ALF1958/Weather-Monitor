@@ -157,5 +157,63 @@ class TestGetNwsAlerts(unittest.TestCase):
         mock_load_cache.assert_called_once()
 
 
+class TestParseNwsAlerts(unittest.TestCase):
+    def test_parse_nws_alerts_exact_event_match(self):
+        features = [
+            {
+                "id": "https://api.weather.gov/alerts/NWS-ALERTS-EXACT1",
+                "properties": {
+                    "event": "Tornado Warning",
+                    "severity": "Severe",
+                    "areaDesc": "Exact Match County",
+                },
+            }
+        ]
+
+        alerts = weather_monitor.parse_nws_alerts(features)
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["event_type"], "Tornado Warning")
+
+    def test_parse_nws_alerts_returns_stable_id_and_text(self):
+        features = [
+            {
+                "id": "https://api.weather.gov/alerts/NWS-ALERTS-AL12345",
+                "properties": {
+                    "event": "Tornado Warning for Northern Area",
+                    "severity": "Severe",
+                    "headline": "A tornado has been spotted.",
+                    "effective": "2026-07-19T08:00:00+00:00",
+                    "expires": "2026-07-19T09:00:00+00:00",
+                    "areaDesc": "Example County",
+                },
+            }
+        ]
+
+        alerts = weather_monitor.parse_nws_alerts(features)
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["id"], "NWS-ALERTS-AL12345")
+        self.assertEqual(alerts[0]["event_type"], "Tornado Warning for Northern Area")
+        self.assertIn("Tornado Warning for Northern Area (Severe)", alerts[0]["text"])
+        self.assertEqual(alerts[0]["area"], "Example County")
+
+    def test_parse_nws_alerts_filters_non_critical(self):
+        features = [
+            {
+                "id": "https://api.weather.gov/alerts/non-critical",
+                "properties": {
+                    "event": "Special Weather Statement",
+                    "severity": "Moderate",
+                    "areaDesc": "Example County",
+                },
+            }
+        ]
+
+        alerts = weather_monitor.parse_nws_alerts(features)
+
+        self.assertEqual(alerts, [])
+
+
 if __name__ == "__main__":
     unittest.main()

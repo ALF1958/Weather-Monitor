@@ -7,6 +7,7 @@ Uses National Weather Service (NWS) for US locations and OpenWeatherMap for inte
 
 import os
 import json
+import hashlib
 import logging
 import smtplib
 from datetime import UTC, datetime, timedelta
@@ -62,6 +63,7 @@ CRITICAL_ALERT_TYPES = {
     'Heavy Snow Warning',
     'Heavy Snow Watch',
 }
+CRITICAL_ALERT_KEYWORDS = tuple(alert_type.lower() for alert_type in CRITICAL_ALERT_TYPES)
 
 # Track sent alerts to avoid duplicates
 SENT_ALERTS_FILE = 'sent_alerts.json'
@@ -418,7 +420,19 @@ def get_nws_alerts(lat, lon, location_name, session=None):
 
 
 def parse_nws_alerts(features):
-    """Parse NWS alert features into critical alerts only"""
+    """Find critical alerts and prepare alert details for email.
+
+    "Critical alerts" here means severe events such as tornadoes, floods,
+    and other dangerous weather listed in CRITICAL_ALERT_TYPES.
+    Matching uses a case-insensitive substring check.
+    "Case-insensitive" means it matches words no matter how they are
+    capitalized (for example, "tornado warning" or "Tornado Warning").
+    A "substring check" means it looks for a critical alert name anywhere
+    inside the full event text.
+    It also allows extra words in the event text, such as
+    "Tornado Warning for Northern Area".
+    Returns a list of alert dictionaries (id, event_type, text, area).
+    """
     alerts = []
 
     for feature in features:
@@ -430,20 +444,63 @@ def parse_nws_alerts(features):
         headline = props.get('headline', '')
         effective = props.get('effective', '')
         expires = props.get('expires', '')
+        area_desc = props.get('areaDesc', 'Unknown area')
+        alert_id = build_nws_alert_id(feature, props, event, effective, expires, area_desc)
+
+        event_lower = event.lower()
+        is_critical_alert = any(critical in event_lower for critical in CRITICAL_ALERT_KEYWORDS)
 
         # ONLY include critical alert types
-        if event in CRITICAL_ALERT_TYPES:
+        if is_critical_alert:
             alert_text = f"{event} ({severity})"
             if headline:
                 alert_text += f"\n{headline}"
             if effective or expires:
                 alert_text += f"\nEffective: {effective} | Expires: {expires}"
-            alerts.append(alert_text)
-            logger.info(f"Critical alert identified: {event} for {props.get('areaDesc', 'Unknown area')}")
+            alerts.append({
+                'id': alert_id,
+                'event_type': event,
+                'text': alert_text,
+                'area': area_desc,
+            })
+            logger.info(f"Critical alert identified: {event} for {area_desc}")
         else:
             logger.debug(f"Non-critical alert filtered out: {event}")
 
-    return alerts if alerts else None
+    return alerts
+
+
+def build_nws_alert_id(feature, props, event, effective, expires, area_desc):
+    """Create a unique ID for one NWS alert.
+
+    First, this tries to use the official ID sent by NWS
+    (for example: "NWS-ALERTS-AL12345").
+    NWS may send that ID inside a full URL, and this function keeps only the
+    last part of the URL so the saved key stays short and consistent.
+    Example: from "https://api.weather.gov/alerts/NWS-ALERTS-AL12345",
+    it keeps "NWS-ALERTS-AL12345".
+    If NWS does not provide an ID, it builds a backup ID that stays the same
+    for the same alert details by turning those details into a unique code
+    using a SHA-256 hash function, so duplicate emails are avoided.
+    Returns the alert ID as a string.
+    """
+    feature_id = feature.get('id', '') or props.get('id', '')
+    alert_id = feature_id.split('/')[-1] if feature_id else ''
+
+    if alert_id:
+        return alert_id
+
+    fallback_source = json.dumps(
+        {
+            'event': event,
+            'effective': effective,
+            'expires': expires,
+            'area_desc': area_desc,
+        },
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    return f"fallback-{hashlib.sha256(fallback_source.encode('utf-8')).hexdigest()}"
 
 
 def send_alert_email(sender_email, sender_password, recipient_emails, location_name, conditions, alert_type='NWS Alert'):
@@ -603,11 +660,12 @@ def main():
 
                 if nws_alerts:
                     # Create unique alert keys for each alert
-                    for alert_text in nws_alerts:
-                        # Extract event type from alert text (first line)
-                        event_type = alert_text.split('\n')[0].split('(')[0].strip()
-                        # Use event type + location + timestamp for uniqueness
-                        alert_key = f"{location_name}_{event_type}_{datetime.now().strftime('%Y-%m-%d-%H:%M')}"
+                    for alert_data in nws_alerts:
+                        event_type = alert_data.get('event_type', 'NWS Alert')
+                        alert_id = alert_data.get('id', '')
+                        alert_text = alert_data.get('text', '')
+                        # Use location + stable NWS alert identifier for uniqueness
+                        alert_key = f"{location_name}_{alert_id}"
 
                         if alert_key not in sent_alerts:
                             if send_alert_email(
@@ -618,7 +676,7 @@ def main():
                                 [alert_text],
                                 alert_type=event_type
                             ):
-                                sent_alerts[alert_key] = datetime.now().isoformat()
+                                sent_alerts[alert_key] = datetime.now(UTC).isoformat()
                                 alerts_sent += 1
                         else:
                             logger.debug(f"Alert already processed: {alert_key}")
