@@ -22,3 +22,108 @@
 2026-07-19 10:22:46,474 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
 2026-07-19 10:22:46,474 - INFO - Found 1 alerts for Fort Campbell
 2026-07-19 10:22:46,475 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:13:13,209 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:13:13,210 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:13:13,210 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:14:03,137 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:14:03,138 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:14:03,138 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:14:03,138 - INFO - NWS alert match method for Fort Campbell: zone
+2026-07-19 14:14:03,138 - WARNING - Zone-based NWS metadata lookup failed for Fort Campbell: points lookup failed
+2026-07-19 14:14:03,138 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:14:03,139 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:14:03,139 - INFO - NWS alert match method for Fort Campbell: point
+2026-07-19 14:14:03,139 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:14:03,140 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:14:03,140 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:14:03,140 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:14:03,140 - INFO - NWS alert match methods for Fort Campbell: zone + point
+2026-07-19 14:15:00,913 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:15:00,913 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:15:00,913 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:15:00,914 - WARNING - Zone-based NWS metadata lookup failed for Fort Campbell: points lookup failed
+2026-07-19 14:15:00,914 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:15:00,914 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:15:00,915 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:15:00,915 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:15:00,915 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:15:00,915 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:15:00,915 - INFO - NWS alert match methods for Fort Campbell: zone + point
+2026-07-19 14:15:39,795 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:15:39,795 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:15:39,796 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:15:39,796 - WARNING - Zone-based NWS metadata lookup failed for Fort Campbell: points lookup failed
+2026-07-19 14:15:39,796 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:15:39,796 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:15:39,797 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:15:39,797 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:15:39,797 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:15:39,797 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:15:39,797 - INFO - NWS alert match methods for Fort Campbell: zone + point
+2026-07-19 14:16:13,238 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:16:13,238 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:16:13,238 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:16:13,239 - WARNING - Zone-based NWS metadata lookup failed for Fort Campbell: points lookup failed
+2026-07-19 14:16:13,239 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:16:13,239 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:16:13,240 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:16:13,240 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:16:13,240 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:16:13,240 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:16:13,240 - INFO - NWS alert match methods for Fort Campbell: zone + point
+2026-07-19 14:16:42,582 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:16:42,582 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:16:42,582 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:16:42,582 - WARNING - Zone-based NWS metadata lookup failed for Fort Campbell: points lookup failed
+2026-07-19 14:16:42,583 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:16:42,583 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:16:42,584 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:16:42,584 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:16:42,584 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:16:42,584 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:16:42,584 - INFO - NWS alert match methods for Fort Campbell: zone + point
+2026-07-19 14:17:11,262 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:17:11,262 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:17:11,262 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:17:11,263 - WARNING - Zone-based NWS metadata lookup failed for Fort Campbell: points lookup failed
+2026-07-19 14:17:11,263 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:17:11,263 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:17:11,264 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:17:11,264 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:17:11,264 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:17:11,264 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:17:11,264 - INFO - NWS alert match methods for Fort Campbell: zone + point
+2026-07-19 14:17:45,088 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:17:45,088 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:17:45,088 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:17:45,089 - WARNING - Zone-based NWS metadata lookup failed for Fort Campbell: points lookup failed
+2026-07-19 14:17:45,089 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:17:45,089 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:17:45,090 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:17:45,090 - INFO - NWS zone-based match for Fort Campbell via zone KYZ007
+2026-07-19 14:17:45,090 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:17:45,090 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:17:45,090 - INFO - NWS alert match methods for Fort Campbell: zone + point
+2026-07-19 14:18:14,156 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:18:14,156 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 14:18:14,156 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:18:14,157 - WARNING - Could not retrieve weather zone information for Fort Campbell: points lookup failed
+2026-07-19 14:18:14,157 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:18:14,157 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:18:14,158 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:18:14,158 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 14:18:14,158 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:18:14,158 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:18:14,158 - INFO - Found alerts for Fort Campbell using both weather zone and location point searches
+2026-07-19 14:18:45,096 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:18:45,096 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 14:18:45,096 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 14:18:45,096 - INFO - Found alerts for Fort Campbell using weather zone search
+2026-07-19 14:18:45,097 - WARNING - Could not retrieve weather zone information for Fort Campbell: points lookup failed
+2026-07-19 14:18:45,097 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:18:45,097 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:18:45,098 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:18:45,098 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 14:18:45,098 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 14:18:45,098 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 14:18:45,098 - INFO - Found alerts for Fort Campbell using both weather zone and location point searches

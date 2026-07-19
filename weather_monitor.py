@@ -225,55 +225,156 @@ def fetch_nws_alert_features(session, alerts_url, location_name):
     return None
 
 
-def get_legacy_nws_alerts_url(lat, lon, cache_key, location_name, session):
-    """Get the older /points-based NWS alerts URL used as a fallback.
+def get_zone_id_from_url(zone_url):
+    """Extract an NWS zone ID from a zone URL.
 
-    This backup path asks the /points endpoint for a zone-specific alerts URL.
-    It is only used when the newer point-based alert lookup fails.
+    NWS zones are geographic areas used by the National Weather Service
+    to group and publish weather alerts.
+
+    Parameters:
+        zone_url: Full NWS zone URL string (for example,
+            "https://api.weather.gov/zones/forecast/KYZ007").
+
+    Returns:
+        Zone ID string (for example, KYZ007), or None when unavailable.
+    """
+    if not zone_url:
+        return None
+    return zone_url.rstrip('/').split('/')[-1]
+
+
+def get_nws_point_metadata(lat, lon, cache_key, location_name, session):
+    """Return /points metadata needed for broader NWS alert matching.
+
+    Includes:
+      - forecast zone ID
+      - county zone ID
+      - legacy alerts URL
 
     Parameters:
         lat: Latitude for the location.
         lon: Longitude for the location.
         cache_key: Cache key in "lat,lon" format.
         location_name: Human-friendly location name for logging.
-        session: Requests session used for the API call.
+        session: Requests session used for API calls.
 
     Returns:
-        The fallback alerts URL string when one is available, otherwise None.
+        Dictionary with cached_at, zone_ids, and alerts_url keys.
     """
     entry = NWS_POINTS_CACHE.get(cache_key)
     if entry and is_cache_entry_valid(entry):
-        alerts_url = entry.get('alerts_url')
-        if alerts_url:
-            logger.debug(f"Using cached legacy alerts URL for {location_name}")
-            return alerts_url
+        if entry.get('zone_ids') or entry.get('alerts_url'):
+            logger.debug(f"Using cached NWS points metadata for {location_name}")
+            return entry
 
     points_url = f"https://api.weather.gov/points/{lat},{lon}"
     response = session.get(points_url, timeout=10)
     response.raise_for_status()
     points_data = response.json()
+    props = points_data.get('properties', {})
 
-    alerts_url = points_data.get('properties', {}).get('alerts')
-    if not alerts_url:
-        return None
+    forecast_zone_id = get_zone_id_from_url(props.get('forecastZone'))
+    county_zone_id = get_zone_id_from_url(props.get('county'))
+    zone_ids = []
+    # Forecast zone and county zone can occasionally be the same ID.
+    # Keep only unique IDs so we do not query the same zone twice.
+    if forecast_zone_id:
+        zone_ids.append(forecast_zone_id)
+    if county_zone_id and county_zone_id != forecast_zone_id:
+        zone_ids.append(county_zone_id)
 
-    NWS_POINTS_CACHE[cache_key] = {
-        'alerts_url': alerts_url,
+    metadata = {
+        'zone_ids': zone_ids,
+        'alerts_url': props.get('alerts'),
         'cached_at': datetime.now(UTC).isoformat()
     }
+    NWS_POINTS_CACHE[cache_key] = metadata
     save_nws_points_cache()
-    return alerts_url
+    return metadata
+
+
+def merge_alert_features(feature_groups):
+    """Merge alert feature lists while removing duplicates.
+
+    In NWS API responses, each "feature" is one alert record.
+
+    Parameters:
+        feature_groups: List of feature lists to merge.
+
+    Returns:
+        Merged feature list with duplicates removed, or None when empty.
+    """
+    merged = []
+    seen_keys = set()
+
+    for features in feature_groups:
+        if not features:
+            continue
+        for feature in features:
+            feature_id = feature.get('id')
+            if feature_id:
+                dedupe_key = feature_id
+            else:
+                props = feature.get('properties', {})
+                # Older or incomplete NWS alert records may omit a stable
+                # top-level "id". In that case, use event + headline + timing
+                # fields as a best-effort identity key to avoid duplicate
+                # notifications. Without this check, users may receive repeat
+                # emails for the same alert.
+                # This tuple (a grouped set of values) acts like a backup ID.
+                dedupe_key = (
+                    props.get('event', ''),
+                    props.get('headline', ''),
+                    props.get('effective', ''),
+                    props.get('expires', ''),
+                )
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+            merged.append(feature)
+
+    return merged if merged else None
+
+
+def get_nws_alerts_by_zone(zone_ids, location_name, session):
+    """Fetch alerts by NWS zone IDs and return merged features.
+
+    When multiple zone IDs are provided, this function queries each zone
+    separately and combines the results.
+
+    Parameters:
+        zone_ids: List of NWS zone IDs, such as ["KYZ007", "KYC047"].
+        location_name: Human-friendly location name for logging.
+        session: Requests session used for API calls.
+
+    Returns:
+        Merged alert features list, or None when no alerts are found.
+    """
+    if not zone_ids:
+        return None
+
+    zone_features = []
+    for zone_id in zone_ids:
+        alerts_url = f"https://api.weather.gov/alerts/active?zone={zone_id}"
+        try:
+            features = fetch_nws_alert_features(session, alerts_url, location_name)
+            if features:
+                logger.info(f"Found alerts for {location_name} in weather zone {zone_id}")
+                zone_features.append(features)
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Zone-based NWS alert lookup failed for {location_name} ({zone_id}): {e}")
+
+    return merge_alert_features(zone_features)
 
 
 def get_nws_alerts(lat, lon, location_name, session=None):
     """Fetch alerts from National Weather Service (US only).
 
     Uses a requests.Session with appropriate User-Agent and Accept headers.
-    First queries the NWS active alerts endpoint by point, which correctly
-    matches locations such as Fort Campbell. If that request fails, it falls
-    back to the legacy /points -> alerts URL flow and uses the persistent cache
-    for that fallback path. The persistent cache respects a TTL (default 24
-    hours) and is configurable via NWS_CACHE_TTL_HOURS env var.
+    First queries NWS by zone/county granularity using /points metadata, then
+    performs a point-based lookup as a secondary check. If both methods return
+    data, features are merged and deduplicated. The /points metadata is cached
+    with a TTL (default 24 hours) configurable via NWS_CACHE_TTL_HOURS.
     """
     sess = session or make_nws_session()
     cache_key = f"{lat},{lon}"
@@ -283,20 +384,34 @@ def get_nws_alerts(lat, lon, location_name, session=None):
         if not NWS_POINTS_CACHE:
             load_nws_points_cache()
 
-        point_alerts_url = f"https://api.weather.gov/alerts/active?point={lat},{lon}"
+        zone_alert_features = None
         try:
-            return fetch_nws_alert_features(sess, point_alerts_url, location_name)
+            point_metadata = get_nws_point_metadata(lat, lon, cache_key, location_name, sess)
+            zone_ids = point_metadata.get('zone_ids', [])
+            zone_alert_features = get_nws_alerts_by_zone(zone_ids, location_name, sess)
+        except requests.exceptions.RequestException as metadata_error:
+            logger.warning(f"Could not retrieve weather zone information for {location_name}: {metadata_error}")
+
+        point_alerts_url = f"https://api.weather.gov/alerts/active?point={lat},{lon}"
+        point_alert_features = None
+        try:
+            point_alert_features = fetch_nws_alert_features(sess, point_alerts_url, location_name)
+            if point_alert_features:
+                logger.info(f"NWS point-based match for {location_name}")
         except requests.exceptions.RequestException as point_error:
-            logger.warning(
-                f"Point-based NWS alert lookup failed for {location_name}: {point_error}"
-            )
+            logger.warning(f"Point-based NWS alert lookup failed for {location_name}: {point_error}")
 
-        alerts_url = get_legacy_nws_alerts_url(lat, lon, cache_key, location_name, sess)
-        if not alerts_url:
-            logger.info(f"No legacy alerts URL available for {location_name}")
-            return None
+        merged_features = merge_alert_features([zone_alert_features, point_alert_features])
+        if merged_features:
+            if zone_alert_features and point_alert_features:
+                logger.info(
+                    f"Found alerts for {location_name} using both weather zone and location point searches"
+                )
+            elif zone_alert_features:
+                logger.info(f"Found alerts for {location_name} using weather zone search")
+            return merged_features
 
-        return fetch_nws_alert_features(sess, alerts_url, location_name)
+        return None
     except requests.exceptions.RequestException as e:
         logger.warning(f"Error fetching NWS alerts for {location_name}: {e}")
         return None
