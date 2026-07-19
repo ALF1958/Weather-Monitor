@@ -6,7 +6,7 @@ import requests
 import weather_monitor
 
 
-class GetNwsAlertsTests(unittest.TestCase):
+class TestGetNwsAlerts(unittest.TestCase):
     def setUp(self):
         weather_monitor.NWS_POINTS_CACHE = {}
 

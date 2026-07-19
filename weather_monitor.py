@@ -211,9 +211,9 @@ def fetch_nws_alert_features(session, alerts_url, location_name):
 
     In the NWS API, "features" are the individual alert objects in the response.
     """
-    alerts_response = session.get(alerts_url, timeout=10)
-    alerts_response.raise_for_status()
-    alerts_data = alerts_response.json()
+    response = session.get(alerts_url, timeout=10)
+    response.raise_for_status()
+    alerts_data = response.json()
 
     features = alerts_data.get('features', [])
     if features:
@@ -237,9 +237,9 @@ def get_legacy_nws_alerts_url(lat, lon, cache_key, location_name, session):
             return alerts_url
 
     points_url = f"https://api.weather.gov/points/{lat},{lon}"
-    points_response = session.get(points_url, timeout=10)
-    points_response.raise_for_status()
-    points_data = points_response.json()
+    response = session.get(points_url, timeout=10)
+    response.raise_for_status()
+    points_data = response.json()
 
     alerts_url = points_data.get('properties', {}).get('alerts')
     if not alerts_url:
