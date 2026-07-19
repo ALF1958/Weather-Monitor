@@ -160,6 +160,7 @@ def is_cache_entry_valid(entry):
         if not cached_at:
             return False
         ts = datetime.fromisoformat(cached_at)
+        # Older cache files stored UTC timestamps without timezone info.
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=UTC)
         if datetime.now(UTC) - ts <= timedelta(hours=NWS_CACHE_TTL_HOURS):
@@ -205,9 +206,9 @@ def make_nws_session(contact=None):
     return sess
 
 
-def fetch_nws_alert_features(sess, alerts_url, location_name):
-    """Fetch and return raw NWS alert features from a specific alerts URL."""
-    alerts_response = sess.get(alerts_url, timeout=10)
+def fetch_nws_alert_features(session, alerts_url, location_name):
+    """Fetch and return raw NWS alert features from a specific NWS alerts URL."""
+    alerts_response = session.get(alerts_url, timeout=10)
     alerts_response.raise_for_status()
     alerts_data = alerts_response.json()
 
@@ -220,7 +221,7 @@ def fetch_nws_alert_features(sess, alerts_url, location_name):
 
 
 def get_legacy_nws_alerts_url(lat, lon, cache_key, location_name, session):
-    """Get a legacy NWS alerts URL for fallback purposes."""
+    """Get the older /points-based NWS alerts URL used as a fallback."""
     entry = NWS_POINTS_CACHE.get(cache_key)
     if entry and is_cache_entry_valid(entry):
         alerts_url = entry.get('alerts_url')
