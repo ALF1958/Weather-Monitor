@@ -1,2 +1,7 @@
 2026-07-19 10:18:59,649 - INFO - Starting weather alert check for multiple locations...
 2026-07-19 10:18:59,649 - ERROR - OPENWEATHERMAP_API_KEY not set
+2026-07-19 10:19:52,454 - INFO - Starting weather alert check for multiple locations...
+2026-07-19 10:19:52,454 - ERROR - OPENWEATHERMAP_API_KEY not set
+2026-07-19 10:19:52,499 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 10:19:52,500 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 10:19:52,500 - INFO - Found 1 alerts for Fort Campbell

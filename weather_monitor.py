@@ -9,7 +9,7 @@ import os
 import json
 import logging
 import smtplib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -160,7 +160,9 @@ def is_cache_entry_valid(entry):
         if not cached_at:
             return False
         ts = datetime.fromisoformat(cached_at)
-        if datetime.utcnow() - ts <= timedelta(hours=NWS_CACHE_TTL_HOURS):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if datetime.now(UTC) - ts <= timedelta(hours=NWS_CACHE_TTL_HOURS):
             return True
         return False
     except Exception:
@@ -237,7 +239,7 @@ def get_legacy_nws_alerts_url(lat, lon, cache_key, location_name, session):
 
     NWS_POINTS_CACHE[cache_key] = {
         'alerts_url': alerts_url,
-        'cached_at': datetime.utcnow().isoformat()
+        'cached_at': datetime.now(UTC).isoformat()
     }
     save_nws_points_cache()
     return alerts_url
