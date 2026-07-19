@@ -7,6 +7,7 @@ Uses National Weather Service (NWS) for US locations and OpenWeatherMap for inte
 
 import os
 import json
+import hashlib
 import logging
 import smtplib
 from datetime import UTC, datetime, timedelta
@@ -62,6 +63,7 @@ CRITICAL_ALERT_TYPES = {
     'Heavy Snow Warning',
     'Heavy Snow Watch',
 }
+CRITICAL_ALERT_KEYWORDS = tuple(alert_type.lower() for alert_type in CRITICAL_ALERT_TYPES)
 
 # Track sent alerts to avoid duplicates
 SENT_ALERTS_FILE = 'sent_alerts.json'
@@ -418,7 +420,11 @@ def get_nws_alerts(lat, lon, location_name, session=None):
 
 
 def parse_nws_alerts(features):
-    """Parse NWS alert features into critical alerts with stable identifiers."""
+    """Parse NWS alert features into critical alerts with stable identifiers.
+
+    Matching is case-insensitive and allows critical phrases as substrings in
+    the NWS event text (for example, "Tornado Warning for Northern Area").
+    """
     alerts = []
 
     for feature in features:
@@ -431,17 +437,13 @@ def parse_nws_alerts(features):
         effective = props.get('effective', '')
         expires = props.get('expires', '')
         area_desc = props.get('areaDesc', 'Unknown area')
-        feature_id = feature.get('id', '') or props.get('id', '')
-        alert_id = feature_id.split('/')[-1] if feature_id else ''
-
-        if not alert_id:
-            alert_id = f"{event}|{effective}|{expires}|{area_desc}"
+        alert_id = build_nws_alert_id(feature, props, event, effective, expires, area_desc)
 
         event_lower = event.lower()
-        critical_match = any(critical.lower() in event_lower for critical in CRITICAL_ALERT_TYPES)
+        is_critical_alert = any(critical in event_lower for critical in CRITICAL_ALERT_KEYWORDS)
 
         # ONLY include critical alert types
-        if critical_match:
+        if is_critical_alert:
             alert_text = f"{event} ({severity})"
             if headline:
                 alert_text += f"\n{headline}"
@@ -457,7 +459,33 @@ def parse_nws_alerts(features):
         else:
             logger.debug(f"Non-critical alert filtered out: {event}")
 
-    return alerts if alerts else None
+    return alerts
+
+
+def build_nws_alert_id(feature, props, event, effective, expires, area_desc):
+    """Build a stable alert ID from NWS payload data.
+
+    Prefer NWS-provided IDs from feature/properties payloads. If no NWS ID is
+    present, return a deterministic fallback ID with the prefix "fallback-"
+    followed by a SHA256 hash of key alert fields.
+    """
+    feature_id = feature.get('id', '') or props.get('id', '')
+    alert_id = feature_id.split('/')[-1] if feature_id else ''
+
+    if alert_id:
+        return alert_id
+
+    fallback_source = json.dumps(
+        {
+            'event': event,
+            'effective': effective,
+            'expires': expires,
+            'area_desc': area_desc,
+        },
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    return f"fallback-{hashlib.sha256(fallback_source.encode('utf-8')).hexdigest()}"
 
 
 def send_alert_email(sender_email, sender_password, recipient_emails, location_name, conditions, alert_type='NWS Alert'):

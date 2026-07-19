@@ -158,6 +158,23 @@ class TestGetNwsAlerts(unittest.TestCase):
 
 
 class TestParseNwsAlerts(unittest.TestCase):
+    def test_parse_nws_alerts_exact_event_match(self):
+        features = [
+            {
+                "id": "https://api.weather.gov/alerts/NWS-ALERTS-EXACT1",
+                "properties": {
+                    "event": "Tornado Warning",
+                    "severity": "Severe",
+                    "areaDesc": "Exact Match County",
+                },
+            }
+        ]
+
+        alerts = weather_monitor.parse_nws_alerts(features)
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["event_type"], "Tornado Warning")
+
     def test_parse_nws_alerts_returns_stable_id_and_text(self):
         features = [
             {
@@ -195,7 +212,7 @@ class TestParseNwsAlerts(unittest.TestCase):
 
         alerts = weather_monitor.parse_nws_alerts(features)
 
-        self.assertIsNone(alerts)
+        self.assertEqual(alerts, [])
 
 
 if __name__ == "__main__":

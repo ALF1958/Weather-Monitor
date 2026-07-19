@@ -152,3 +152,70 @@
 2026-07-19 15:12:34,614 - INFO - NWS point-based match for Fort Campbell
 2026-07-19 15:12:34,615 - INFO - Found alerts for Fort Campbell using both weather zone and location point searches
 2026-07-19 15:12:34,615 - INFO - Critical alert identified: Tornado Warning for Northern Area for Example County
+2026-07-19 15:13:17,243 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:13:17,243 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:13:17,243 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 15:13:17,243 - INFO - Found alerts for Fort Campbell using weather zone search
+2026-07-19 15:13:17,244 - WARNING - Could not retrieve weather zone information for Fort Campbell: points lookup failed
+2026-07-19 15:13:17,244 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:13:17,244 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:13:17,245 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:13:17,245 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:13:17,245 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:13:17,245 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:13:17,245 - INFO - Found alerts for Fort Campbell using both weather zone and location point searches
+2026-07-19 15:13:17,245 - INFO - Critical alert identified: Tornado Warning for Northern Area for Example County
+2026-07-19 15:13:47,011 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:13:47,011 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:13:47,011 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 15:13:47,011 - INFO - Found alerts for Fort Campbell using weather zone search
+2026-07-19 15:13:47,011 - WARNING - Could not retrieve weather zone information for Fort Campbell: points lookup failed
+2026-07-19 15:13:47,012 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:13:47,012 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:13:47,013 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:13:47,013 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:13:47,013 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:13:47,013 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:13:47,013 - INFO - Found alerts for Fort Campbell using both weather zone and location point searches
+2026-07-19 15:13:47,013 - INFO - Critical alert identified: Tornado Warning for Northern Area for Example County
+2026-07-19 15:14:26,296 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:14:26,296 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:14:26,296 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 15:14:26,296 - INFO - Found alerts for Fort Campbell using weather zone search
+2026-07-19 15:14:26,297 - WARNING - Could not retrieve weather zone information for Fort Campbell: points lookup failed
+2026-07-19 15:14:26,297 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:14:26,297 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:14:26,298 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:14:26,298 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:14:26,298 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:14:26,298 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:14:26,298 - INFO - Found alerts for Fort Campbell using both weather zone and location point searches
+2026-07-19 15:14:26,298 - INFO - Critical alert identified: Tornado Warning for Northern Area for Example County
+2026-07-19 15:15:03,637 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:15:03,637 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:15:03,638 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 15:15:03,638 - INFO - Found alerts for Fort Campbell using weather zone search
+2026-07-19 15:15:03,638 - WARNING - Could not retrieve weather zone information for Fort Campbell: points lookup failed
+2026-07-19 15:15:03,638 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:15:03,638 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:15:03,639 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:15:03,639 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:15:03,639 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:15:03,640 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:15:03,640 - INFO - Found alerts for Fort Campbell using both weather zone and location point searches
+2026-07-19 15:15:03,640 - INFO - Critical alert identified: Tornado Warning for Exact Match County
+2026-07-19 15:15:03,640 - INFO - Critical alert identified: Tornado Warning for Northern Area for Example County
+2026-07-19 15:15:41,111 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:15:41,111 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:15:41,111 - WARNING - Point-based NWS alert lookup failed for Fort Campbell: point lookup failed
+2026-07-19 15:15:41,111 - INFO - Found alerts for Fort Campbell using weather zone search
+2026-07-19 15:15:41,112 - WARNING - Could not retrieve weather zone information for Fort Campbell: points lookup failed
+2026-07-19 15:15:41,112 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:15:41,112 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:15:41,113 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:15:41,113 - INFO - Found alerts for Fort Campbell in weather zone KYZ007
+2026-07-19 15:15:41,113 - INFO - Found 1 alerts for Fort Campbell
+2026-07-19 15:15:41,113 - INFO - NWS point-based match for Fort Campbell
+2026-07-19 15:15:41,113 - INFO - Found alerts for Fort Campbell using both weather zone and location point searches
+2026-07-19 15:15:41,113 - INFO - Critical alert identified: Tornado Warning for Exact Match County
+2026-07-19 15:15:41,113 - INFO - Critical alert identified: Tornado Warning for Northern Area for Example County
