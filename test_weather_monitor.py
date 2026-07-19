@@ -48,7 +48,7 @@ class TestGetNwsAlerts(unittest.TestCase):
 
         features = weather_monitor.get_nws_alerts(36.6260, -87.4660, "Fort Campbell", session=session)
 
-        self.assertEqual(len(features), 2)
+        # Extract alert IDs to verify both zone and point alerts are present.
         self.assertEqual(
             [f["id"] for f in features],
             ["zone-alert-1", "point-alert-1"]

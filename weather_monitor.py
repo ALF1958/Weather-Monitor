@@ -226,7 +226,18 @@ def fetch_nws_alert_features(session, alerts_url, location_name):
 
 
 def get_zone_id_from_url(zone_url):
-    """Extract the NWS zone ID (e.g., KYZ007) from a zone URL."""
+    """Extract an NWS zone ID from a zone URL.
+
+    NWS zones are geographic areas used by the National Weather Service
+    to group and publish weather alerts.
+
+    Parameters:
+        zone_url: Full NWS zone URL string (for example,
+            "https://api.weather.gov/zones/forecast/KYZ007").
+
+    Returns:
+        Zone ID string (for example, KYZ007), or None when unavailable.
+    """
     if not zone_url:
         return None
     return zone_url.rstrip('/').split('/')[-1]
@@ -239,6 +250,16 @@ def get_nws_point_metadata(lat, lon, cache_key, location_name, session):
       - forecast zone ID
       - county zone ID
       - legacy alerts URL
+
+    Parameters:
+        lat: Latitude for the location.
+        lon: Longitude for the location.
+        cache_key: Cache key in "lat,lon" format.
+        location_name: Human-friendly location name for logging.
+        session: Requests session used for API calls.
+
+    Returns:
+        Dictionary with cached_at, zone_ids, and alerts_url keys.
     """
     entry = NWS_POINTS_CACHE.get(cache_key)
     if entry and is_cache_entry_valid(entry):
@@ -255,9 +276,12 @@ def get_nws_point_metadata(lat, lon, cache_key, location_name, session):
     forecast_zone_id = get_zone_id_from_url(props.get('forecastZone'))
     county_zone_id = get_zone_id_from_url(props.get('county'))
     zone_ids = []
-    for zone_id in [forecast_zone_id, county_zone_id]:
-        if zone_id and zone_id not in zone_ids:
-            zone_ids.append(zone_id)
+    # Forecast zone and county zone can occasionally be the same ID.
+    # Keep only unique IDs so we do not query the same zone twice.
+    if forecast_zone_id:
+        zone_ids.append(forecast_zone_id)
+    if county_zone_id and county_zone_id != forecast_zone_id:
+        zone_ids.append(county_zone_id)
 
     metadata = {
         'zone_ids': zone_ids,
@@ -270,7 +294,16 @@ def get_nws_point_metadata(lat, lon, cache_key, location_name, session):
 
 
 def merge_alert_features(feature_groups):
-    """Merge alert feature lists while removing duplicates."""
+    """Merge alert feature lists while removing duplicates.
+
+    In NWS API responses, each "feature" is one alert record.
+
+    Parameters:
+        feature_groups: List of feature lists to merge.
+
+    Returns:
+        Merged feature list with duplicates removed, or None when empty.
+    """
     merged = []
     seen_keys = set()
 
@@ -283,6 +316,12 @@ def merge_alert_features(feature_groups):
                 dedupe_key = feature_id
             else:
                 props = feature.get('properties', {})
+                # Older or incomplete NWS alert records may omit a stable
+                # top-level "id". In that case, use event + headline + timing
+                # fields as a best-effort identity key to avoid duplicate
+                # notifications. Without this check, users may receive repeat
+                # emails for the same alert.
+                # This tuple (a grouped set of values) acts like a backup ID.
                 dedupe_key = (
                     props.get('event', ''),
                     props.get('headline', ''),
@@ -298,7 +337,19 @@ def merge_alert_features(feature_groups):
 
 
 def get_nws_alerts_by_zone(zone_ids, location_name, session):
-    """Fetch alerts by NWS zone IDs and return merged features."""
+    """Fetch alerts by NWS zone IDs and return merged features.
+
+    When multiple zone IDs are provided, this function queries each zone
+    separately and combines the results.
+
+    Parameters:
+        zone_ids: List of NWS zone IDs, such as ["KYZ007", "KYC047"].
+        location_name: Human-friendly location name for logging.
+        session: Requests session used for API calls.
+
+    Returns:
+        Merged alert features list, or None when no alerts are found.
+    """
     if not zone_ids:
         return None
 
@@ -308,7 +359,7 @@ def get_nws_alerts_by_zone(zone_ids, location_name, session):
         try:
             features = fetch_nws_alert_features(session, alerts_url, location_name)
             if features:
-                logger.info(f"NWS zone-based match for {location_name} via zone {zone_id}")
+                logger.info(f"Found alerts for {location_name} in weather zone {zone_id}")
                 zone_features.append(features)
         except requests.exceptions.RequestException as e:
             logger.warning(f"Zone-based NWS alert lookup failed for {location_name} ({zone_id}): {e}")
@@ -338,10 +389,8 @@ def get_nws_alerts(lat, lon, location_name, session=None):
             point_metadata = get_nws_point_metadata(lat, lon, cache_key, location_name, sess)
             zone_ids = point_metadata.get('zone_ids', [])
             zone_alert_features = get_nws_alerts_by_zone(zone_ids, location_name, sess)
-        except requests.exceptions.RequestException as zone_error:
-            logger.warning(
-                f"Zone-based NWS metadata lookup failed for {location_name}: {zone_error}"
-            )
+        except requests.exceptions.RequestException as metadata_error:
+            logger.warning(f"Could not retrieve weather zone information for {location_name}: {metadata_error}")
 
         point_alerts_url = f"https://api.weather.gov/alerts/active?point={lat},{lon}"
         point_alert_features = None
@@ -355,11 +404,11 @@ def get_nws_alerts(lat, lon, location_name, session=None):
         merged_features = merge_alert_features([zone_alert_features, point_alert_features])
         if merged_features:
             if zone_alert_features and point_alert_features:
-                logger.info(f"NWS alert match methods for {location_name}: zone + point")
+                logger.info(
+                    f"Found alerts for {location_name} using both weather zone and location point searches"
+                )
             elif zone_alert_features:
-                logger.info(f"NWS alert match method for {location_name}: zone")
-            else:
-                logger.info(f"NWS alert match method for {location_name}: point")
+                logger.info(f"Found alerts for {location_name} using weather zone search")
             return merged_features
 
         return None
