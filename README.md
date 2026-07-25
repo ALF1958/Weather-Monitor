@@ -4,6 +4,8 @@ Weather-Monitor is a Python project for checking severe weather alerts and sendi
 
 ## Current Repository Contents
 - `weather_monitor.py` - main monitoring script
+- `test_weather_monitor.py` - automated tests
+- `config.example.json` - example configuration file (copy and fill in your details)
 - `requirements.txt` - Python dependencies
 - `QUICK_START.md` - beginner setup guide
 - `WORKING_AGREEMENT.md` - collaboration guide for this repository
