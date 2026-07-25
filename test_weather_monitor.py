@@ -1,3 +1,6 @@
+import json
+import os
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from datetime import UTC, datetime
@@ -448,6 +451,68 @@ class TestBuildDashboardDigest(unittest.TestCase):
         now = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
         digest = weather_monitor.build_dashboard_digest(now, [], {}, {})
         self.assertEqual(digest['errors'], [])
+
+
+class TestLoadConfig(unittest.TestCase):
+    """Tests for the load_config() config-file + env-var merge logic."""
+
+    def _write_config(self, tmp_path, data):
+        path = os.path.join(tmp_path, 'config.json')
+        with open(path, 'w') as f:
+            json.dump(data, f)
+        return path
+
+    def test_env_var_overrides_file_credential(self):
+        """An env var credential wins over the same key in the config file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_config(tmp, {'sender_email': 'file@example.com'})
+            with patch.dict(os.environ, {'CONFIG_PATH': path, 'SENDER_EMAIL': 'env@example.com'}):
+                cfg = weather_monitor.load_config()
+        self.assertEqual(cfg['sender_email'], 'env@example.com')
+
+    def test_file_value_used_when_no_env_var(self):
+        """A config-file value is kept when the corresponding env var is absent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_config(tmp, {'sender_email': 'file@example.com'})
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ('SENDER_EMAIL', 'CONFIG_PATH')}
+            env['CONFIG_PATH'] = path
+            with patch.dict(os.environ, env, clear=True):
+                cfg = weather_monitor.load_config()
+        self.assertEqual(cfg['sender_email'], 'file@example.com')
+
+    def test_recipient_emails_parsed_from_env(self):
+        """RECIPIENT_EMAILS env var is split on commas and whitespace-stripped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_config(tmp, {})
+            with patch.dict(os.environ, {
+                'CONFIG_PATH': path,
+                'RECIPIENT_EMAILS': 'a@example.com, b@example.com',
+            }):
+                cfg = weather_monitor.load_config()
+        self.assertEqual(cfg['recipient_emails'], ['a@example.com', 'b@example.com'])
+
+    def test_default_locations_used_when_config_empty(self):
+        """Built-in default locations are returned when neither the file nor env provides any."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_config(tmp, {})
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ('CONFIG_PATH',)}
+            env['CONFIG_PATH'] = path
+            with patch.dict(os.environ, env, clear=True):
+                cfg = weather_monitor.load_config()
+        self.assertIsInstance(cfg['locations'], list)
+        self.assertGreater(len(cfg['locations']), 0)
+
+    def test_missing_config_file_falls_back_to_env_and_defaults(self):
+        """A missing config file is handled gracefully; env vars and defaults still apply."""
+        with patch.dict(os.environ, {
+            'CONFIG_PATH': '/nonexistent/path/config.json',
+            'SENDER_EMAIL': 'env@example.com',
+        }):
+            cfg = weather_monitor.load_config()
+        self.assertEqual(cfg['sender_email'], 'env@example.com')
+        self.assertIsInstance(cfg.get('locations'), list)
 
 
 if __name__ == "__main__":

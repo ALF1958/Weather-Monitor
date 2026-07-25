@@ -6,6 +6,8 @@ __pycache__/
 alerts.log
 nws_points_cache.json
 sent_alerts.json
+monitor_state.json
+dashboard_digest.json
 
 # Config with secrets
 config.json
