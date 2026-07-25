@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Runtime files
+alerts.log
+nws_points_cache.json
+sent_alerts.json
+
+# Config with secrets
+config.json
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
