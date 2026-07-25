@@ -74,6 +74,11 @@ Go straight to Step 5
    - `SENDER_EMAIL` = your Gmail
    - `SENDER_PASSWORD` = your 16-char password
    - `RECIPIENT_EMAILS` = team@company.com,manager@company.com
+   - `DAILY_DIGEST_ENABLED` = true (default)
+   - `DAILY_DIGEST_HOUR_UTC` = 11 (default daily digest send hour in UTC)
+   - `DIGEST_SEND_IF_EMPTY` = false (default; skip digest when no elevated risk)
+   - `IMMEDIATE_ALERTS_ENABLED` = true (default)
+   - `IMMEDIATE_ESCALATION_ONLY` = true (default; only email on worsening conditions)
 
 8. Done! ✅ Your monitor runs 24/7
 
@@ -84,15 +89,16 @@ Go straight to Step 5
 Your system is now:
 - ✅ Monitoring 25 locations
 - ✅ Checking every 15 minutes
-- ✅ Sending team email when **severe weather** happens
+- ✅ Sending one executive-friendly **24h risk digest** per day (default 11:00 UTC)
+- ✅ Sending immediate email only for **critical escalations**
 - ✅ Running 24/7 for free
 
 ## When You Get Alerts
 
-1. **Severe weather happens** anywhere you're monitoring
-2. **System detects it** (checks every 15 min)
-3. **Your team gets email** instantly
-4. **No duplicates** (tracks what was already sent)
+1. **Possible severe weather risk appears in next 24h**
+2. **System includes it in the daily digest**
+3. **If active alerts worsen**, your team gets an immediate escalation email
+4. **No duplicates/spam** (tracks prior sends and digest day state)
 
 ## Severe Weather Includes
 

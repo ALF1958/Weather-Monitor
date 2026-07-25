@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import Mock, patch
+from datetime import UTC, datetime
 
 import requests
 
@@ -213,6 +214,56 @@ class TestParseNwsAlerts(unittest.TestCase):
         alerts = weather_monitor.parse_nws_alerts(features)
 
         self.assertEqual(alerts, [])
+
+
+class TestDigestAndEscalationHelpers(unittest.TestCase):
+    def test_should_send_daily_digest_once_per_day_after_hour(self):
+        state = {}
+        now = datetime(2026, 7, 25, 11, 5, tzinfo=UTC)
+
+        self.assertTrue(weather_monitor.should_send_daily_digest(state, 11, now))
+
+        state["last_digest_date_utc"] = "2026-07-25"
+        self.assertFalse(weather_monitor.should_send_daily_digest(state, 11, now))
+        self.assertFalse(
+            weather_monitor.should_send_daily_digest(
+                {}, 11, datetime(2026, 7, 25, 10, 59, tzinfo=UTC)
+            )
+        )
+
+    def test_parse_forecast_risks_24h_detects_multiple_categories(self):
+        periods = [
+            {
+                "name": "Tonight",
+                "startTime": "2026-07-25T02:00:00+00:00",
+                "endTime": "2026-07-25T08:00:00+00:00",
+                "shortForecast": "Severe thunderstorms likely with damaging wind and large hail.",
+                "detailedForecast": "Heavy rain may cause flash flooding overnight.",
+                "windSpeed": "25 mph",
+            }
+        ]
+
+        risk_summary = weather_monitor.parse_forecast_risks_24h(periods)
+
+        self.assertTrue(risk_summary["has_elevated_risk"])
+        self.assertIn("Severe Thunderstorms", risk_summary["top_categories"])
+        self.assertIn("Flooding", risk_summary["top_categories"])
+        self.assertTrue(risk_summary["evidence"])
+
+    def test_is_immediate_escalation_detects_new_warning(self):
+        previous = {
+            "events": ["Flood Watch"],
+            "warning_events": [],
+            "max_severity": weather_monitor.SEVERITY_RANK["moderate"],
+        }
+        current = {
+            "events": ["Flood Watch", "Flood Warning"],
+            "warning_events": ["Flood Warning"],
+            "max_severity": weather_monitor.SEVERITY_RANK["severe"],
+        }
+
+        self.assertTrue(weather_monitor.is_immediate_escalation(previous, current))
+        self.assertFalse(weather_monitor.is_immediate_escalation(current, current))
 
 
 if __name__ == "__main__":
