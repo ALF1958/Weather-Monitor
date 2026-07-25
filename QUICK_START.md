@@ -87,7 +87,7 @@ Go straight to Step 5
 ## That's It!
 
 Your system is now:
-- ✅ Monitoring 25 locations
+- ✅ Monitoring 45 locations
 - ✅ Checking every 15 minutes
 - ✅ Sending one executive-friendly **24h risk digest** per day (default 11:00 UTC)
 - ✅ Sending immediate email only for **critical escalations**
@@ -146,6 +146,6 @@ Need to monitor more cities?
 
 **Your severe weather alert system is live! 🎉**
 
-Now your team gets instant alerts when severe weather hits any of your 25 locations worldwide.
+Now your team gets instant alerts when severe weather hits any of your 45 locations worldwide.
 
 Questions? Check `alerts.log` to see what's happening.
