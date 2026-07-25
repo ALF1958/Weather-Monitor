@@ -488,7 +488,10 @@ def parse_nws_alerts(features):
 
         # ONLY include critical alert types
         if is_critical_alert:
+<<<<<<< HEAD
             dedupe_key = build_alert_dedupe_key(event, headline, area_desc, effective, expires)
+=======
+>>>>>>> origin/main
             alert_text = f"{event} ({severity})"
             if headline:
                 alert_text += f"\n{headline}"
@@ -496,7 +499,10 @@ def parse_nws_alerts(features):
                 alert_text += f"\nEffective: {effective} | Expires: {expires}"
             alerts.append({
                 'id': alert_id,
+<<<<<<< HEAD
                 'dedupe_key': dedupe_key,
+=======
+>>>>>>> origin/main
                 'event_type': event,
                 'text': alert_text,
                 'area': area_desc,
@@ -539,6 +545,7 @@ def build_nws_alert_id(feature, props, event, effective, expires, area_desc):
         separators=(',', ':'),
     )
     return f"fallback-{hashlib.sha256(fallback_source.encode('utf-8')).hexdigest()}"
+<<<<<<< HEAD
 
 
 def build_alert_dedupe_key(event, headline, area_desc, effective, expires):
@@ -555,6 +562,8 @@ def build_alert_dedupe_key(event, headline, area_desc, effective, expires):
         separators=(',', ':'),
     )
     return hashlib.sha256(source.encode('utf-8')).hexdigest()
+=======
+>>>>>>> origin/main
 
 
 def send_alert_email(sender_email, sender_password, recipient_emails, location_name, conditions, alert_type='NWS Alert'):
@@ -758,6 +767,7 @@ def main():
                     # Create unique alert keys for each alert
                     for alert_data in nws_alerts:
                         event_type = alert_data.get('event_type', 'NWS Alert')
+<<<<<<< HEAD
                         alert_dedupe_key = alert_data.get('dedupe_key') or alert_data.get('id', '')
                         alert_text = alert_data.get('text', '')
                         # Use location + stable content key for uniqueness across runs
@@ -771,6 +781,24 @@ def main():
                             })
                             sent_alerts[alert_key] = datetime.now(UTC).isoformat()
                             alerts_sent += 1
+=======
+                        alert_id = alert_data.get('id', '')
+                        alert_text = alert_data.get('text', '')
+                        # Use location + stable NWS alert identifier for uniqueness
+                        alert_key = f"{location_name}_{alert_id}"
+
+                        if alert_key not in sent_alerts:
+                            if send_alert_email(
+                                config['sender_email'],
+                                config['sender_password'],
+                                recipient_emails,
+                                location_name,
+                                [alert_text],
+                                alert_type=event_type
+                            ):
+                                sent_alerts[alert_key] = datetime.now(UTC).isoformat()
+                                alerts_sent += 1
+>>>>>>> origin/main
                         else:
                             logger.debug(f"Alert already processed: {alert_key}")
                 else:
