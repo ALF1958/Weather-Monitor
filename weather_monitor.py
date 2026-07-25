@@ -488,6 +488,7 @@ def parse_nws_alerts(features):
 
         # ONLY include critical alert types
         if is_critical_alert:
+            dedupe_key = build_alert_dedupe_key(event, headline, area_desc, effective, expires)
             alert_text = f"{event} ({severity})"
             if headline:
                 alert_text += f"\n{headline}"
@@ -495,6 +496,7 @@ def parse_nws_alerts(features):
                 alert_text += f"\nEffective: {effective} | Expires: {expires}"
             alerts.append({
                 'id': alert_id,
+                'dedupe_key': dedupe_key,
                 'event_type': event,
                 'text': alert_text,
                 'area': area_desc,
@@ -537,6 +539,22 @@ def build_nws_alert_id(feature, props, event, effective, expires, area_desc):
         separators=(',', ':'),
     )
     return f"fallback-{hashlib.sha256(fallback_source.encode('utf-8')).hexdigest()}"
+
+
+def build_alert_dedupe_key(event, headline, area_desc, effective, expires):
+    """Create a stable dedupe key for an alert based on alert content."""
+    source = json.dumps(
+        {
+            'event': (event or '').strip().lower(),
+            'headline': (headline or '').strip().lower(),
+            'area_desc': (area_desc or '').strip().lower(),
+            'effective': (effective or '').strip().lower(),
+            'expires': (expires or '').strip().lower(),
+        },
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    return hashlib.sha256(source.encode('utf-8')).hexdigest()
 
 
 def send_alert_email(sender_email, sender_password, recipient_emails, location_name, conditions, alert_type='NWS Alert'):
@@ -626,6 +644,47 @@ This is an automated message.
         return False
 
 
+def send_run_summary_email(sender_email, sender_password, recipient_emails, run_alerts):
+    """Send one email containing all new alerts found in this monitor run."""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = ', '.join(recipient_emails)
+        msg['Subject'] = f"🚨 Weather Monitor - Run Summary ({len(run_alerts)} new alerts)"
+
+        lines = []
+        for idx, a in enumerate(run_alerts, start=1):
+            lines.append(f"{idx}. {a['location']} - {a['event_type']}")
+            lines.append(f"   {a['text'].replace(chr(10), chr(10) + '   ')}")
+            lines.append("")
+
+        body = f"""
+WEATHER MONITOR RUN SUMMARY
+{'=' * 50}
+
+Time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}
+New alerts in this run: {len(run_alerts)}
+
+Details:
+{chr(10).join(lines)}
+
+This is an automated alert from Weather Monitor.
+"""
+
+        msg.attach(MIMEText(body, 'plain'))
+
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+
+        logger.info(f"Run summary email sent with {len(run_alerts)} alerts")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send run summary email: {e}")
+        return False
+
+
 def main():
     """Main weather monitoring loop"""
     logger.info("Starting weather alert check for multiple locations...")
@@ -674,6 +733,7 @@ def main():
 
     # Check weather for each location
     alerts_sent = 0
+    run_alerts = []
     for location in locations:
         location_name = location.get('name', 'Unknown')
         lat = location.get('lat')
@@ -698,22 +758,19 @@ def main():
                     # Create unique alert keys for each alert
                     for alert_data in nws_alerts:
                         event_type = alert_data.get('event_type', 'NWS Alert')
-                        alert_id = alert_data.get('id', '')
+                        alert_dedupe_key = alert_data.get('dedupe_key') or alert_data.get('id', '')
                         alert_text = alert_data.get('text', '')
-                        # Use location + stable NWS alert identifier for uniqueness
-                        alert_key = f"{location_name}_{alert_id}"
+                        # Use location + stable content key for uniqueness across runs
+                        alert_key = f"{location_name}_{alert_dedupe_key}"
 
                         if alert_key not in sent_alerts:
-                            if send_alert_email(
-                                config['sender_email'],
-                                config['sender_password'],
-                                recipient_emails,
-                                location_name,
-                                [alert_text],
-                                alert_type=event_type
-                            ):
-                                sent_alerts[alert_key] = datetime.now(UTC).isoformat()
-                                alerts_sent += 1
+                            run_alerts.append({
+                                'location': location_name,
+                                'event_type': event_type,
+                                'text': alert_text,
+                            })
+                            sent_alerts[alert_key] = datetime.now(UTC).isoformat()
+                            alerts_sent += 1
                         else:
                             logger.debug(f"Alert already processed: {alert_key}")
                 else:
@@ -722,6 +779,17 @@ def main():
                 logger.info(f"No alerts returned from NWS for {location_name}")
         else:
             logger.debug(f"Skipping {location_name} - only US locations use NWS alerts")
+
+    # Send one aggregated email per run
+    if run_alerts:
+        send_run_summary_email(
+            config['sender_email'],
+            config['sender_password'],
+            recipient_emails,
+            run_alerts
+        )
+    else:
+        logger.info("No new critical alerts to email in this run.")
 
     # Save sent alerts
     save_sent_alerts(sent_alerts)
