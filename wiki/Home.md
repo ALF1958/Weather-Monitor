@@ -31,7 +31,7 @@ Weather-Monitor is an automated system that watches for dangerous weather at mul
 
 - Monitors **US locations** using the free National Weather Service (NWS) API — no key needed for US alerts.
 - Monitors **international locations** (Japan, Korea, Germany, etc.) using the OpenWeatherMap API (free key required).
-- Sends a **daily digest email** once per day summarising any elevated risk across all locations (default time: 11:00 UTC).
+- Sends a **daily digest email** once per day summarizing any elevated risk across all locations (default time: 11:00 UTC).
 - Sends an **immediate escalation email** only when an active alert suddenly gets worse — this keeps your inbox quiet.
 - Runs automatically via **GitHub Actions** every 15 minutes. No server or hosting is needed beyond Railway or similar free-tier cloud, or you can run it entirely on GitHub Actions.
 - All settings can be controlled through **environment variables**, so no sensitive information needs to be stored in a file.

@@ -89,7 +89,7 @@ Within about 60 seconds, a test email will arrive in the inbox you configured. C
 
 Once secrets are set, the monitor runs automatically every 15 minutes via GitHub Actions. No further action is needed.
 
-- A **daily digest** email summarising any elevated risk arrives once per day at 11:00 UTC (configurable — see [Configuration](Configuration)).
+- A **daily digest** email summarizing any elevated risk arrives once per day at 11:00 UTC (configurable — see [Configuration](Configuration)).
 - An **immediate escalation** email is sent any time an active warning worsens (for example, a Watch upgrades to a Warning).
 
 ---
