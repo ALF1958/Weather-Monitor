@@ -77,6 +77,35 @@ NWS_CACHE_TTL_HOURS = int(os.getenv('NWS_CACHE_TTL_HOURS', '24'))
 NWS_POINTS_CACHE = {}
 MONITOR_STATE_FILE = 'monitor_state.json'
 
+# --- Dashboard output file (configurable via env var) ---
+DASHBOARD_DIGEST_FILE = os.getenv('DASHBOARD_DIGEST_FILE', 'dashboard_digest.json')
+
+# Priority score band thresholds (configurable via env vars; default values match scoring model)
+PRIORITY_CRITICAL_MIN = int(os.getenv('PRIORITY_CRITICAL_MIN', '85'))
+PRIORITY_HIGH_MIN = int(os.getenv('PRIORITY_HIGH_MIN', '65'))
+PRIORITY_MEDIUM_MIN = int(os.getenv('PRIORITY_MEDIUM_MIN', '40'))
+
+# Scoring weight knobs — all numeric, all overridable via env vars
+_W_SEVERITY = {
+    'extreme':  int(os.getenv('WEIGHT_SEVERITY_EXTREME',  '50')),
+    'severe':   int(os.getenv('WEIGHT_SEVERITY_SEVERE',   '35')),
+    'moderate': int(os.getenv('WEIGHT_SEVERITY_MODERATE', '20')),
+    'minor':    int(os.getenv('WEIGHT_SEVERITY_MINOR',    '10')),
+    'unknown':  0,
+}
+# Per-event-type bonus applied once per matching alert (first match wins)
+_W_EVENT_BONUS = {
+    'tornado warning':             int(os.getenv('WEIGHT_EVENT_TORNADO_WARNING',     '35')),
+    'hurricane warning':           int(os.getenv('WEIGHT_EVENT_HURRICANE_WARNING',   '35')),
+    'flash flood warning':         int(os.getenv('WEIGHT_EVENT_FLASH_FLOOD_WARNING', '28')),
+    'severe thunderstorm warning': int(os.getenv('WEIGHT_EVENT_TSTORM_WARNING',      '24')),
+    'blizzard warning':            int(os.getenv('WEIGHT_EVENT_BLIZZARD_WARNING',    '24')),
+    'red flag warning':            int(os.getenv('WEIGHT_EVENT_RED_FLAG_WARNING',    '20')),
+}
+_W_ESCALATION_BONUS = int(os.getenv('WEIGHT_ESCALATION_BONUS', '18'))
+_W_RISK_CAT_BONUS   = int(os.getenv('WEIGHT_RISK_CAT_BONUS',   '8'))
+_W_RISK_CAT_MAX     = int(os.getenv('WEIGHT_RISK_CAT_MAX',     '24'))
+
 SEVERITY_RANK = {
     'unknown': 0,
     'minor': 1,
@@ -826,6 +855,8 @@ def parse_nws_alerts(features):
                 'severity': severity,
                 'text': alert_text,
                 'area': area_desc,
+                'effective': effective,
+                'expires': expires,
             })
             logger.info(f"Critical alert identified: {event} for {area_desc}")
         else:
@@ -1101,6 +1132,204 @@ This is an automated alert from Weather Monitor.
         return False
 
 
+# ---------------------------------------------------------------------------
+# Executive priority engine
+# ---------------------------------------------------------------------------
+
+def score_location_priority(active_alerts, risk_summary, is_escalating, location_weight=1.0):
+    """Compute deterministic priority score (0-100), band, status, and confidence.
+
+    Inputs
+    ------
+    active_alerts   : list of dicts from parse_nws_alerts()
+    risk_summary    : dict from parse_forecast_risks_24h()
+    is_escalating   : bool — True when is_immediate_escalation() fires this run
+    location_weight : optional per-location multiplier from config (default 1.0)
+
+    Returns
+    -------
+    (score: int, band: str, status: str, confidence: float)
+
+    Scoring model (all weights are config-overridable via env vars):
+      1. Severity contribution  — _W_SEVERITY value added per active alert
+      2. Event-type bonus       — best matching key in _W_EVENT_BONUS per alert
+         (at most one bonus per alert; first match wins)
+      3. Forecast risk bonus    — _W_RISK_CAT_BONUS × category count,
+         capped at _W_RISK_CAT_MAX
+      4. Escalation bonus       — _W_ESCALATION_BONUS added when is_escalating
+      5. location_weight        — multiplier applied before capping at 100
+
+    Band thresholds (configurable):
+      critical : score >= PRIORITY_CRITICAL_MIN  (default 85)
+      high     : score >= PRIORITY_HIGH_MIN       (default 65)
+      medium   : score >= PRIORITY_MEDIUM_MIN     (default 40)
+      low      : below PRIORITY_MEDIUM_MIN
+
+    Status rules (deterministic, evaluated in priority order):
+      escalating : is_escalating is True
+      active     : active_alerts is non-empty
+      elevated   : risk_summary has_elevated_risk is True
+      normal     : none of the above
+    """
+    score = 0
+
+    for a in active_alerts:
+        sev = (a.get('severity') or 'unknown').lower()
+        score += _W_SEVERITY.get(sev, 0)
+        e = (a.get('event_type') or '').lower()
+        for key, bonus in _W_EVENT_BONUS.items():
+            if key in e:
+                score += bonus
+                break  # at most one event-type bonus per alert
+
+    score += min(len(risk_summary.get('top_categories', [])) * _W_RISK_CAT_BONUS, _W_RISK_CAT_MAX)
+
+    if is_escalating:
+        score += _W_ESCALATION_BONUS
+
+    score = int(min(100, round(score * location_weight)))
+
+    if score >= PRIORITY_CRITICAL_MIN:
+        band = 'critical'
+    elif score >= PRIORITY_HIGH_MIN:
+        band = 'high'
+    elif score >= PRIORITY_MEDIUM_MIN:
+        band = 'medium'
+    else:
+        band = 'low'
+
+    if is_escalating:
+        status = 'escalating'
+    elif active_alerts:
+        status = 'active'
+    elif risk_summary.get('has_elevated_risk'):
+        status = 'elevated'
+    else:
+        status = 'normal'
+
+    # Confidence: base 0.55, boosted by data availability
+    confidence = 0.55
+    if active_alerts:
+        confidence += 0.25
+    if risk_summary.get('has_elevated_risk'):
+        confidence += 0.15
+    if is_escalating:
+        confidence += 0.05
+    confidence = min(0.99, round(confidence, 2))
+
+    return score, band, status, confidence
+
+
+def get_recommended_action(priority_band, status):
+    """Return a concise, operations-focused action recommendation for senior management.
+
+    Language is generated deterministically from priority band and current status
+    so that operators can act without interpreting raw weather data.
+    """
+    if priority_band == 'critical':
+        if status == 'escalating':
+            return (
+                "IMMEDIATE ACTION: Activate emergency response protocol; verify personnel "
+                "shelter posture and accountability now."
+            )
+        return (
+            "Activate emergency response procedures; confirm personnel accountability "
+            "and escalate to senior leadership."
+        )
+    if priority_band == 'high':
+        if status == 'escalating':
+            return (
+                "Implement enhanced safety protocols; brief site leadership on current "
+                "threat and prepare contingency actions."
+            )
+        return (
+            "Monitor closely; brief site leadership; ensure emergency contacts are current "
+            "and contingency plans are ready."
+        )
+    if priority_band == 'medium':
+        return (
+            "Review forecast details; confirm emergency contacts are current; "
+            "monitor for escalation."
+        )
+    # low
+    return "No action required; continue routine monitoring."
+
+
+# ---------------------------------------------------------------------------
+# Dashboard JSON artifact
+# ---------------------------------------------------------------------------
+
+def build_dashboard_digest(now_utc, locations_payload, delivery, changes, errors=None):
+    """Assemble the executive dashboard JSON artifact for one monitor run.
+
+    Parameters
+    ----------
+    now_utc          : datetime (UTC-aware) for this run
+    locations_payload: list of per-location dicts built in main()
+    delivery         : dict summarising email send outcomes
+    changes          : dict with new_escalations / resolved_locations / unchanged_locations
+    errors           : optional list of error strings recorded during the run
+
+    Returns a dict ready to be serialised to dashboard_digest.json.
+    """
+    priority_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+    elevated = 0
+    active_critical = 0
+    escalating = 0
+
+    for row in locations_payload:
+        band = row.get('priority_band', 'low')
+        if band in priority_counts:
+            priority_counts[band] += 1
+        if row.get('risk_categories'):
+            elevated += 1
+        if row.get('active_alerts_count', 0) > 0:
+            active_critical += 1
+        if row.get('status') == 'escalating':
+            escalating += 1
+
+    top_locations = sorted(
+        locations_payload,
+        key=lambda x: (x.get('priority_score', 0), x.get('active_alerts_count', 0)),
+        reverse=True,
+    )[:10]
+
+    run_ts = now_utc.strftime('%Y%m%dT%H%M%SZ')
+    run_hash = hashlib.sha1(run_ts.encode()).hexdigest()[:8]
+
+    return {
+        'run_id': f"{run_ts}_{run_hash}",
+        'generated_at_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'digest_window': {
+            'type': 'next_24h',
+            'start_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'end_utc': (now_utc + timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        },
+        'summary': {
+            'locations_total': len(locations_payload),
+            'locations_with_elevated_risk': elevated,
+            'locations_with_active_critical_alerts': active_critical,
+            'locations_escalating': escalating,
+            'priority_counts': priority_counts,
+        },
+        'top_locations': top_locations,
+        'locations': locations_payload,
+        'changes_since_last_run': changes,
+        'delivery': delivery,
+        'errors': errors or [],
+    }
+
+
+def save_dashboard_digest(payload):
+    """Write dashboard digest JSON to DASHBOARD_DIGEST_FILE."""
+    try:
+        with open(DASHBOARD_DIGEST_FILE, 'w') as f:
+            json.dump(payload, f, indent=2)
+        logger.info(f"Dashboard digest written to {DASHBOARD_DIGEST_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to write dashboard digest JSON: {e}")
+
+
 def main():
     """Main weather monitoring loop"""
     logger.info("Starting weather alert check for multiple locations...")
@@ -1160,6 +1389,11 @@ def main():
     digest_rows = []
     digest_fingerprints = {}
     alerts_sent = 0
+    # Dashboard / priority tracking
+    locations_payload = []
+    prior_signatures = monitor_state.get('prior_location_signatures', {})
+    current_signatures = {}
+    run_errors = []
 
     # Check weather for each location
     for location in locations:
@@ -1174,82 +1408,186 @@ def main():
 
         logger.info(f"Checking alerts for {location_name} ({country})...")
 
-        # Check if this is a US location - use NWS alerts
-        if country.upper() == 'US':
-            logger.info(f"Fetching National Weather Service alerts for {location_name}...")
-            nws_features = get_nws_alerts(lat, lon, location_name, session=nws_session)
-            nws_alerts = parse_nws_alerts(nws_features) if nws_features else []
+        try:
+            # Check if this is a US location - use NWS alerts
+            if country.upper() == 'US':
+                logger.info(f"Fetching National Weather Service alerts for {location_name}...")
+                nws_features = get_nws_alerts(lat, lon, location_name, session=nws_session)
+                nws_alerts = parse_nws_alerts(nws_features) if nws_features else []
 
-            current_immediate_fp = build_immediate_escalation_fingerprint(nws_alerts)
-            previous_immediate_fp = immediate_state.get(location_name)
-            location_escalation = is_immediate_escalation(previous_immediate_fp, current_immediate_fp)
-            location_new_alert_rows = []
-            location_new_alert_keys = []
+                current_immediate_fp = build_immediate_escalation_fingerprint(nws_alerts)
+                previous_immediate_fp = immediate_state.get(location_name)
+                location_escalation = is_immediate_escalation(previous_immediate_fp, current_immediate_fp)
+                location_new_alert_rows = []
+                location_new_alert_keys = []
 
-            if nws_alerts:
-                for alert_data in nws_alerts:
-                    event_type = alert_data.get('event_type', 'NWS Alert')
-                    alert_dedupe_key = alert_data.get('dedupe_key') or alert_data.get('id', '')
-                    alert_text = alert_data.get('text', '')
-                    alert_key = f"{location_name}_{alert_dedupe_key}"
-
-                    if alert_key not in sent_alerts:
-                        location_new_alert_rows.append({
-                            'location': location_name,
-                            'event_type': event_type,
-                            'text': alert_text,
-                        })
-                        location_new_alert_keys.append(alert_key)
-                    else:
-                        logger.debug(f"Alert already processed: {alert_key}")
-
-                should_add_immediate_rows = (
-                    (immediate_escalation_only and location_escalation) or
-                    (not immediate_escalation_only and bool(location_new_alert_rows))
-                )
-                if immediate_alerts_enabled and should_add_immediate_rows:
+                if nws_alerts:
                     for alert_data in nws_alerts:
-                        immediate_email_rows.append({
-                            'location': location_name,
-                            'event_type': alert_data.get('event_type', 'NWS Alert'),
-                            'text': alert_data.get('text', ''),
-                        })
-                    for alert_key in location_new_alert_keys:
-                        sent_alerts[alert_key] = now_utc.isoformat()
-                        alerts_sent += 1
-                    immediate_state[location_name] = current_immediate_fp
-                elif immediate_escalation_only and location_escalation:
-                    logger.info(
-                        f"Escalation detected for {location_name}, but immediate alerts are disabled by config."
+                        event_type = alert_data.get('event_type', 'NWS Alert')
+                        alert_dedupe_key = alert_data.get('dedupe_key') or alert_data.get('id', '')
+                        alert_text = alert_data.get('text', '')
+                        alert_key = f"{location_name}_{alert_dedupe_key}"
+
+                        if alert_key not in sent_alerts:
+                            location_new_alert_rows.append({
+                                'location': location_name,
+                                'event_type': event_type,
+                                'text': alert_text,
+                            })
+                            location_new_alert_keys.append(alert_key)
+                        else:
+                            logger.debug(f"Alert already processed: {alert_key}")
+
+                    should_add_immediate_rows = (
+                        (immediate_escalation_only and location_escalation) or
+                        (not immediate_escalation_only and bool(location_new_alert_rows))
                     )
+                    if immediate_alerts_enabled and should_add_immediate_rows:
+                        for alert_data in nws_alerts:
+                            immediate_email_rows.append({
+                                'location': location_name,
+                                'event_type': alert_data.get('event_type', 'NWS Alert'),
+                                'text': alert_data.get('text', ''),
+                            })
+                        for alert_key in location_new_alert_keys:
+                            sent_alerts[alert_key] = now_utc.isoformat()
+                            alerts_sent += 1
+                        immediate_state[location_name] = current_immediate_fp
+                    elif immediate_escalation_only and location_escalation:
+                        logger.info(
+                            f"Escalation detected for {location_name}, but immediate alerts are disabled by config."
+                        )
+                    else:
+                        logger.info(f"No immediate escalation for {location_name}")
                 else:
-                    logger.info(f"No immediate escalation for {location_name}")
-            else:
-                logger.info(f"No critical alerts for {location_name}")
-                immediate_state.pop(location_name, None)
+                    logger.info(f"No critical alerts for {location_name}")
+                    immediate_state.pop(location_name, None)
 
-            forecast_periods = get_nws_forecast_periods_24h(lat, lon, location_name, nws_session, now_utc=now_utc)
-            risk_summary = parse_forecast_risks_24h(forecast_periods)
-            digest_fingerprints[location_name] = build_risk_fingerprint(risk_summary)
+                forecast_periods = get_nws_forecast_periods_24h(lat, lon, location_name, nws_session, now_utc=now_utc)
+                risk_summary = parse_forecast_risks_24h(forecast_periods)
+                digest_fingerprints[location_name] = build_risk_fingerprint(risk_summary)
 
-            if risk_summary['has_elevated_risk']:
-                digest_rows.append({
+                if risk_summary['has_elevated_risk']:
+                    digest_rows.append({
+                        'location': location_name,
+                        'top_categories': risk_summary['top_categories'],
+                        'evidence': risk_summary['evidence'],
+                        'timeframe': risk_summary['timeframe'],
+                    })
+
+                # --- Executive priority scoring for dashboard ---
+                # Optional per-location multiplier: add "priority_weight": 1.5 (or any positive
+                # float) to a location entry in config.json to amplify its score; use 0.5 to
+                # de-emphasise it.  Omit the key (or set to 1.0) for standard behaviour.
+                location_weight = float(location.get('priority_weight', 1.0))
+                priority_score, priority_band, loc_status, confidence = score_location_priority(
+                    nws_alerts, risk_summary, location_escalation, location_weight
+                )
+                recommended_action = get_recommended_action(priority_band, loc_status)
+                current_signatures[location_name] = {
+                    'band': priority_band,
+                    'status': loc_status,
+                    'score': priority_score,
+                }
+                dash_alerts = [
+                    {
+                        'id': a.get('id', ''),
+                        'event_type': a.get('event_type', ''),
+                        'severity': a.get('severity', ''),
+                        'area': a.get('area', ''),
+                        'effective': a.get('effective', ''),
+                        'expires': a.get('expires', ''),
+                    }
+                    for a in nws_alerts
+                ]
+                locations_payload.append({
                     'location': location_name,
-                    'top_categories': risk_summary['top_categories'],
-                    'evidence': risk_summary['evidence'],
-                    'timeframe': risk_summary['timeframe'],
+                    'lat': lat,
+                    'lon': lon,
+                    'country': country,
+                    'status': loc_status,
+                    'priority_score': priority_score,
+                    'priority_band': priority_band,
+                    'confidence': confidence,
+                    'risk_categories': risk_summary.get('top_categories', []),
+                    'risk_evidence': risk_summary.get('evidence', []),
+                    'timeframe': risk_summary.get('timeframe', ''),
+                    'active_alerts_count': len(nws_alerts),
+                    'active_alerts': dash_alerts,
+                    'recommended_action': recommended_action,
+                    'last_change_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
                 })
+            else:
+                logger.debug(f"Skipping {location_name} - only US locations use NWS alerts")
+                locations_payload.append({
+                    'location': location_name,
+                    'lat': lat,
+                    'lon': lon,
+                    'country': country,
+                    'status': 'normal',
+                    'priority_score': 0,
+                    'priority_band': 'low',
+                    'confidence': 0.0,
+                    'risk_categories': [],
+                    'risk_evidence': [],
+                    'timeframe': '',
+                    'active_alerts_count': 0,
+                    'active_alerts': [],
+                    'recommended_action': get_recommended_action('low', 'normal'),
+                    'last_change_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                })
+        except Exception as exc:
+            logger.error(f"Unexpected error processing {location_name}: {exc}")
+            run_errors.append(f"{location_name}: {exc}")
+
+    # --- Change tracking: compare current signatures against prior run ---
+    band_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
+    new_escalations = []
+    new_locations = []
+    resolved_locations = []
+    unchanged_locations = []
+    for loc_name, sig in current_signatures.items():
+        prior = prior_signatures.get(loc_name)
+        if prior is None:
+            # First time this location has been seen; report it if already active/elevated
+            if sig['status'] not in ('normal',):
+                new_locations.append(loc_name)
+            continue
+        cur_band = sig['band']
+        prior_band = prior.get('band', 'low')
+        cur_status = sig['status']
+        prior_status = prior.get('status', 'normal')
+        if band_order.get(cur_band, 0) > band_order.get(prior_band, 0):
+            new_escalations.append(loc_name)
+        elif cur_status == 'normal' and prior_status != 'normal':
+            resolved_locations.append(loc_name)
         else:
-            logger.debug(f"Skipping {location_name} - only US locations use NWS alerts")
+            unchanged_locations.append(loc_name)
+
+    changes = {
+        'new_escalations': new_escalations,
+        'new_locations': new_locations,
+        'resolved_locations': resolved_locations,
+        'unchanged_locations': unchanged_locations,
+        'new_escalation_count': len(new_escalations),
+        'new_location_count': len(new_locations),
+        'resolved_count': len(resolved_locations),
+        'unchanged_count': len(unchanged_locations),
+    }
+
+    # --- Send emails; capture delivery outcomes for dashboard ---
+    digest_sent = False
+    digest_recipients = 0
 
     if daily_digest_enabled and should_send_daily_digest(monitor_state, daily_digest_hour_utc, now_utc):
         if digest_rows or digest_send_if_empty:
-            send_daily_digest_email(
+            digest_sent = send_daily_digest_email(
                 config['sender_email'],
                 config['sender_password'],
                 recipient_emails,
                 digest_rows
             )
+            digest_recipients = len(recipient_emails)
         else:
             logger.info("Digest hour reached; no elevated 24h risks found, digest email skipped.")
         monitor_state['last_digest_date_utc'] = now_utc.strftime('%Y-%m-%d')
@@ -1257,20 +1595,37 @@ def main():
     else:
         logger.info("Daily digest not sent in this run (disabled, not scheduled yet, or already sent today).")
 
+    immediate_sent = False
+    immediate_rows_count = 0
+
     if immediate_alerts_enabled and immediate_email_rows:
-        send_immediate_escalation_email(
+        immediate_sent = send_immediate_escalation_email(
             config['sender_email'],
             config['sender_password'],
             recipient_emails,
             immediate_email_rows
         )
+        immediate_rows_count = len(immediate_email_rows)
     elif not immediate_alerts_enabled:
         logger.info("Immediate alerts are disabled by configuration.")
     else:
         logger.info("No immediate escalation alerts to email in this run.")
 
+    # --- Build and write dashboard digest JSON ---
+    delivery = {
+        'digest_email_sent': digest_sent,
+        'digest_email_recipients': digest_recipients,
+        'immediate_email_sent': immediate_sent,
+        'immediate_email_rows': immediate_rows_count,
+        'immediate_email_recipients': len(recipient_emails) if immediate_sent else 0,
+    }
+    dashboard = build_dashboard_digest(now_utc, locations_payload, delivery, changes, run_errors)
+    save_dashboard_digest(dashboard)
+
     # Save sent alerts
     save_sent_alerts(sent_alerts)
+    # Persist updated location signatures for next-run change tracking
+    monitor_state['prior_location_signatures'] = current_signatures
     save_monitor_state(monitor_state)
 
     logger.info(f"Alert check complete. Critical alerts sent: {alerts_sent}")

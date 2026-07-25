@@ -266,5 +266,189 @@ class TestDigestAndEscalationHelpers(unittest.TestCase):
         self.assertFalse(weather_monitor.is_immediate_escalation(current, current))
 
 
+class TestPriorityEngine(unittest.TestCase):
+    """Tests for the deterministic executive priority scoring engine."""
+
+    def _empty_risk(self):
+        return {'has_elevated_risk': False, 'top_categories': [], 'evidence': [], 'timeframe': ''}
+
+    def _elevated_risk(self, categories=None):
+        cats = categories or ['Severe Thunderstorms']
+        return {
+            'has_elevated_risk': True,
+            'top_categories': cats,
+            'evidence': ['Evidence line'],
+            'timeframe': 'Jul 25',
+        }
+
+    # ------------------------------------------------------------------
+    # score_location_priority
+    # ------------------------------------------------------------------
+
+    def test_no_alerts_no_risk_gives_low_score(self):
+        score, band, status, confidence = weather_monitor.score_location_priority(
+            [], self._empty_risk(), False
+        )
+        self.assertEqual(band, 'low')
+        self.assertEqual(status, 'normal')
+        self.assertLess(score, weather_monitor.PRIORITY_MEDIUM_MIN)
+        self.assertLessEqual(confidence, 0.6)
+
+    def test_tornado_warning_severe_escalating_gives_critical(self):
+        alerts = [{'event_type': 'Tornado Warning', 'severity': 'Severe'}]
+        score, band, status, confidence = weather_monitor.score_location_priority(
+            alerts, self._elevated_risk(), True
+        )
+        self.assertEqual(band, 'critical')
+        self.assertEqual(status, 'escalating')
+        self.assertGreaterEqual(score, weather_monitor.PRIORITY_CRITICAL_MIN)
+        self.assertGreater(confidence, 0.9)
+
+    def test_escalating_flag_sets_status_escalating(self):
+        alerts = [{'event_type': 'Flood Watch', 'severity': 'Moderate'}]
+        _, _, status, _ = weather_monitor.score_location_priority(
+            alerts, self._empty_risk(), True
+        )
+        self.assertEqual(status, 'escalating')
+
+    def test_active_alerts_no_escalation_status_is_active(self):
+        alerts = [{'event_type': 'Flood Warning', 'severity': 'Moderate'}]
+        _, _, status, _ = weather_monitor.score_location_priority(
+            alerts, self._empty_risk(), False
+        )
+        self.assertEqual(status, 'active')
+
+    def test_elevated_risk_only_status_is_elevated(self):
+        _, _, status, _ = weather_monitor.score_location_priority(
+            [], self._elevated_risk(), False
+        )
+        self.assertEqual(status, 'elevated')
+
+    def test_score_capped_at_100(self):
+        alerts = [
+            {'event_type': 'Tornado Warning', 'severity': 'Extreme'},
+            {'event_type': 'Hurricane Warning', 'severity': 'Extreme'},
+        ]
+        score, _, _, _ = weather_monitor.score_location_priority(
+            alerts, self._elevated_risk(['Severe Thunderstorms', 'Flooding', 'Winter Weather']), True
+        )
+        self.assertLessEqual(score, 100)
+
+    def test_location_weight_scales_score(self):
+        alerts = [{'event_type': 'Wind Advisory', 'severity': 'Minor'}]
+        score_default, _, _, _ = weather_monitor.score_location_priority(
+            alerts, self._empty_risk(), False, 1.0
+        )
+        score_double, _, _, _ = weather_monitor.score_location_priority(
+            alerts, self._empty_risk(), False, 2.0
+        )
+        # Doubled weight should yield a higher or equal score (capped at 100)
+        self.assertGreaterEqual(score_double, score_default)
+
+    # ------------------------------------------------------------------
+    # get_recommended_action
+    # ------------------------------------------------------------------
+
+    def test_critical_escalating_action_contains_immediate(self):
+        action = weather_monitor.get_recommended_action('critical', 'escalating')
+        self.assertIn('IMMEDIATE', action)
+
+    def test_critical_active_action_contains_activate(self):
+        action = weather_monitor.get_recommended_action('critical', 'active')
+        self.assertIn('Activate', action)
+
+    def test_high_escalating_different_from_high_active(self):
+        esc = weather_monitor.get_recommended_action('high', 'escalating')
+        act = weather_monitor.get_recommended_action('high', 'active')
+        self.assertNotEqual(esc, act)
+
+    def test_low_normal_is_routine(self):
+        action = weather_monitor.get_recommended_action('low', 'normal')
+        self.assertIn('routine monitoring', action.lower())
+
+    def test_medium_mentions_monitor(self):
+        action = weather_monitor.get_recommended_action('medium', 'elevated')
+        self.assertIn('monitor', action.lower())
+
+
+class TestBuildDashboardDigest(unittest.TestCase):
+    """Tests for the dashboard JSON assembly function."""
+
+    def _make_loc(self, name, score=0, band='low', status='normal', alerts_count=0, cats=None):
+        return {
+            'location': name,
+            'lat': 36.0,
+            'lon': -87.0,
+            'country': 'US',
+            'status': status,
+            'priority_score': score,
+            'priority_band': band,
+            'confidence': 0.6,
+            'risk_categories': cats or [],
+            'risk_evidence': [],
+            'timeframe': '',
+            'active_alerts_count': alerts_count,
+            'active_alerts': [],
+            'recommended_action': 'No action required; continue routine monitoring.',
+            'last_change_utc': '2026-07-25T12:00:00Z',
+        }
+
+    def test_summary_counts_are_correct(self):
+        locs = [
+            self._make_loc('A', score=90, band='critical', status='escalating', alerts_count=1, cats=['Severe Thunderstorms']),
+            self._make_loc('B', score=70, band='high', status='active', alerts_count=1),
+            self._make_loc('C', score=20, band='low', status='normal'),
+        ]
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+        delivery = {'digest_email_sent': True, 'digest_email_recipients': 2,
+                    'immediate_email_sent': False, 'immediate_email_rows': 0,
+                    'immediate_email_recipients': 0}
+        changes = {'new_escalations': ['A'], 'new_locations': [], 'resolved_locations': [],
+                   'unchanged_locations': ['B', 'C'],
+                   'new_escalation_count': 1, 'new_location_count': 0,
+                   'resolved_count': 0, 'unchanged_count': 2}
+
+        digest = weather_monitor.build_dashboard_digest(now, locs, delivery, changes)
+
+        summary = digest['summary']
+        self.assertEqual(summary['locations_total'], 3)
+        self.assertEqual(summary['locations_with_elevated_risk'], 1)
+        self.assertEqual(summary['locations_with_active_critical_alerts'], 2)
+        self.assertEqual(summary['locations_escalating'], 1)
+        self.assertEqual(summary['priority_counts']['critical'], 1)
+        self.assertEqual(summary['priority_counts']['high'], 1)
+        self.assertEqual(summary['priority_counts']['low'], 1)
+
+    def test_top_locations_sorted_by_score(self):
+        locs = [self._make_loc(f'L{i}', score=i * 10) for i in range(12)]
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+        digest = weather_monitor.build_dashboard_digest(now, locs, {}, {})
+        self.assertEqual(len(digest['top_locations']), 10)
+        # Highest score should be first
+        self.assertEqual(digest['top_locations'][0]['location'], 'L11')
+
+    def test_run_id_format(self):
+        now = datetime(2026, 7, 25, 14, 0, 5, tzinfo=UTC)
+        digest = weather_monitor.build_dashboard_digest(now, [], {}, {})
+        self.assertTrue(digest['run_id'].startswith('20260725T140005Z_'))
+        self.assertEqual(len(digest['run_id']), len('20260725T140005Z_') + 8)
+
+    def test_digest_window_24h_span(self):
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+        digest = weather_monitor.build_dashboard_digest(now, [], {}, {})
+        self.assertEqual(digest['digest_window']['start_utc'], '2026-07-25T12:00:00Z')
+        self.assertEqual(digest['digest_window']['end_utc'], '2026-07-26T12:00:00Z')
+
+    def test_errors_field_present(self):
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+        digest = weather_monitor.build_dashboard_digest(now, [], {}, {}, errors=['err1'])
+        self.assertEqual(digest['errors'], ['err1'])
+
+    def test_errors_defaults_to_empty_list(self):
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+        digest = weather_monitor.build_dashboard_digest(now, [], {}, {})
+        self.assertEqual(digest['errors'], [])
+
+
 if __name__ == "__main__":
     unittest.main()
