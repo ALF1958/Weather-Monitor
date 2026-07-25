@@ -1,3 +1,6 @@
+import json
+import os
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from datetime import UTC, datetime
@@ -454,7 +457,6 @@ class TestLoadConfig(unittest.TestCase):
     """Tests for the load_config() config-file + env-var merge logic."""
 
     def _write_config(self, tmp_path, data):
-        import json, os
         path = os.path.join(tmp_path, 'config.json')
         with open(path, 'w') as f:
             json.dump(data, f)
@@ -462,7 +464,6 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_env_var_overrides_file_credential(self):
         """An env var credential wins over the same key in the config file."""
-        import tempfile, os
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write_config(tmp, {'sender_email': 'file@example.com'})
             with patch.dict(os.environ, {'CONFIG_PATH': path, 'SENDER_EMAIL': 'env@example.com'}):
@@ -471,7 +472,6 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_file_value_used_when_no_env_var(self):
         """A config-file value is kept when the corresponding env var is absent."""
-        import tempfile, os
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write_config(tmp, {'sender_email': 'file@example.com'})
             env = {k: v for k, v in os.environ.items()
@@ -483,7 +483,6 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_recipient_emails_parsed_from_env(self):
         """RECIPIENT_EMAILS env var is split on commas and whitespace-stripped."""
-        import tempfile, os
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write_config(tmp, {})
             with patch.dict(os.environ, {
@@ -495,7 +494,6 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_default_locations_used_when_config_empty(self):
         """Built-in default locations are returned when neither the file nor env provides any."""
-        import tempfile, os
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write_config(tmp, {})
             env = {k: v for k, v in os.environ.items()
@@ -508,7 +506,6 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_missing_config_file_falls_back_to_env_and_defaults(self):
         """A missing config file is handled gracefully; env vars and defaults still apply."""
-        import os
         with patch.dict(os.environ, {
             'CONFIG_PATH': '/nonexistent/path/config.json',
             'SENDER_EMAIL': 'env@example.com',
