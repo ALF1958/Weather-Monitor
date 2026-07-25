@@ -11,6 +11,7 @@ import hashlib
 import logging
 import smtplib
 from datetime import UTC, datetime, timedelta
+from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -169,26 +170,46 @@ FORECAST_RISK_KEYWORDS = {
 
 
 def load_config():
-    """Load configuration from environment variables or config.json"""
+    """Load configuration from a config file and environment variables.
+
+    Loading priority (highest to lowest):
+      1. Environment variables for credentials — these always win over the file.
+         This allows a committed config file to carry the site list while
+         secrets come safely from GitHub Secrets / environment variables.
+      2. Config file values (CONFIG_PATH env var, or config.json by default).
+      3. Built-in default site list when no locations are provided by any source.
+    """
     config_path = os.getenv('CONFIG_PATH', 'config.json')
-    
-    # Try to load from file first
+
+    config = {}
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r') as f:
-                return json.load(f)
+                config = json.load(f)
+            logger.info(f"Loaded configuration from {config_path}")
         except Exception as e:
             logger.warning(f"Could not load {config_path}: {e}")
-    
-    # Fallback to environment variables
-    return {
-        'openweathermap_api_key': os.getenv('OPENWEATHERMAP_API_KEY'),
-        'sender_email': os.getenv('SENDER_EMAIL'),
-        'sender_password': os.getenv('SENDER_PASSWORD'),
-        'recipient_emails': os.getenv('RECIPIENT_EMAILS', '').split(','),
-        # Optional contact string for NWS User-Agent: set NWS_CONTACT env var or provide in config
-        'nws_contact': os.getenv('NWS_CONTACT'),
-        'locations': [
+
+    # Environment variables always override file values for credentials.
+    # Empty/unset env vars do not overwrite a value already in the file.
+    for env_key, config_key in (
+        ('OPENWEATHERMAP_API_KEY', 'openweathermap_api_key'),
+        ('SENDER_EMAIL',          'sender_email'),
+        ('SENDER_PASSWORD',       'sender_password'),
+        ('NWS_CONTACT',           'nws_contact'),
+    ):
+        val = os.getenv(env_key)
+        if val:
+            config[config_key] = val
+
+    # RECIPIENT_EMAILS arrives as a comma-separated string when set via env var.
+    recipient_env = os.getenv('RECIPIENT_EMAILS')
+    if recipient_env:
+        config['recipient_emails'] = [e.strip() for e in recipient_env.split(',') if e.strip()]
+
+    # Use built-in default location list only when no locations were provided.
+    if not config.get('locations'):
+        config['locations'] = [
             {'name': 'TSC HAWAII', 'lat': 21.483, 'lon': -158.0827, 'country': 'US'},
             {'name': 'TSC CORPUS CHRISTI', 'lat': 27.6905, 'lon': -97.2894, 'country': 'US'},
             {'name': 'TSC FT POLK', 'lat': 31.033, 'lon': -93.183, 'country': 'US'},
@@ -235,7 +256,8 @@ def load_config():
             {'name': 'TSC WIESBADEN', 'lat': 49.9691, 'lon': 8.1186, 'country': 'DE'},
             {'name': 'TSC WAINWRIGHT', 'lat': 64.833, 'lon': -147.5827, 'country': 'US'},
         ]
-    }
+
+    return config
 
 
 def load_sent_alerts():
