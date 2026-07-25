@@ -1,6 +1,7 @@
 # Python cache
 __pycache__/
 *.py[cod]
+*.pyo
 
 # Runtime files
 alerts.log
@@ -11,6 +12,7 @@ dashboard_digest.json
 
 # Config with secrets
 config.json
+.env
 
 # Virtual environments
 venv/
@@ -20,3 +22,7 @@ env/
 # IDE
 .vscode/
 .idea/
+
+# OS files
+.DS_Store
+Thumbs.db
