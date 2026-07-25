@@ -75,6 +75,68 @@ NWS_CACHE_TTL_HOURS = int(os.getenv('NWS_CACHE_TTL_HOURS', '24'))
 
 # In-memory cache for runtime as well
 NWS_POINTS_CACHE = {}
+MONITOR_STATE_FILE = 'monitor_state.json'
+
+SEVERITY_RANK = {
+    'unknown': 0,
+    'minor': 1,
+    'moderate': 2,
+    'severe': 3,
+    'extreme': 4,
+}
+
+FORECAST_RISK_KEYWORDS = {
+    'Severe Thunderstorms': (
+        'severe thunderstorm',
+        'damaging wind',
+        'large hail',
+        'tornado',
+        'strong thunderstorm',
+    ),
+    'Flooding': (
+        'flash flood',
+        'flooding',
+        'flood',
+        'excessive rainfall',
+        'heavy rain',
+    ),
+    'Winter Weather': (
+        'winter storm',
+        'blizzard',
+        'snow',
+        'ice',
+        'freezing rain',
+        'sleet',
+        'wind chill',
+    ),
+    'Extreme Heat/Cold': (
+        'heat index',
+        'dangerous heat',
+        'extreme heat',
+        'record heat',
+        'extreme cold',
+        'dangerous cold',
+        'hard freeze',
+    ),
+    'High Wind': (
+        'high wind',
+        'wind advisory',
+        'strong winds',
+        'gust',
+    ),
+    'Fire Weather': (
+        'red flag',
+        'fire weather',
+        'critical fire',
+        'dry and windy',
+    ),
+    'Poor Air Quality': (
+        'air quality',
+        'smoke',
+        'ozone',
+        'unhealthy air',
+    ),
+}
 
 
 def load_config():
@@ -167,6 +229,28 @@ def save_sent_alerts(alerts):
         logger.error(f"Could not save sent alerts: {e}")
 
 
+def load_monitor_state():
+    """Load persistent monitor state (digest + escalation fingerprints)."""
+    if os.path.exists(MONITOR_STATE_FILE):
+        try:
+            with open(MONITOR_STATE_FILE, 'r') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.warning(f"Could not load monitor state: {e}")
+    return {}
+
+
+def save_monitor_state(state):
+    """Persist monitor state to disk."""
+    try:
+        with open(MONITOR_STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        logger.error(f"Could not save monitor state: {e}")
+
+
 def load_nws_points_cache():
     """Load persistent NWS points cache from disk into NWS_POINTS_CACHE (in-memory)."""
     global NWS_POINTS_CACHE
@@ -242,6 +326,46 @@ def make_nws_session(contact=None):
     sess.mount('http://', adapter)
 
     return sess
+
+
+def parse_iso_datetime(value):
+    """Parse an ISO timestamp and return timezone-aware UTC datetime."""
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return ts.astimezone(UTC)
+    except Exception:
+        return None
+
+
+def read_bool_setting(config, key, default):
+    """Read bool config with env override support."""
+    env_key = key.upper()
+    raw_value = os.getenv(env_key)
+    if raw_value is None:
+        raw_value = config.get(key, default)
+
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        return raw_value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(raw_value)
+
+
+def read_int_setting(config, key, default):
+    """Read integer config with env override support."""
+    env_key = key.upper()
+    raw_value = os.getenv(env_key)
+    if raw_value is None:
+        raw_value = config.get(key, default)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        value = default
+    return value
 
 
 def fetch_nws_alert_features(session, alerts_url, location_name):
@@ -324,6 +448,8 @@ def get_nws_point_metadata(lat, lon, cache_key, location_name, session):
     metadata = {
         'zone_ids': zone_ids,
         'alerts_url': props.get('alerts'),
+        'forecast_url': props.get('forecast'),
+        'forecast_hourly_url': props.get('forecastHourly'),
         'cached_at': datetime.now(UTC).isoformat()
     }
     NWS_POINTS_CACHE[cache_key] = metadata
@@ -455,6 +581,205 @@ def get_nws_alerts(lat, lon, location_name, session=None):
         return None
 
 
+def get_nws_forecast_periods_24h(lat, lon, location_name, session, now_utc=None):
+    """Fetch forecast periods covering the next 24 hours for one US location."""
+    reference_now = now_utc or datetime.now(UTC)
+    cache_key = f"{lat},{lon}"
+
+    if not NWS_POINTS_CACHE:
+        load_nws_points_cache()
+
+    try:
+        point_metadata = get_nws_point_metadata(lat, lon, cache_key, location_name, session)
+    except requests.exceptions.RequestException as metadata_error:
+        logger.warning(f"Could not retrieve forecast metadata for {location_name}: {metadata_error}")
+        return []
+
+    forecast_urls = []
+    hourly_url = point_metadata.get('forecast_hourly_url')
+    regular_url = point_metadata.get('forecast_url')
+    if hourly_url:
+        forecast_urls.append(hourly_url)
+    if regular_url and regular_url not in forecast_urls:
+        forecast_urls.append(regular_url)
+
+    if not forecast_urls:
+        logger.warning(f"No forecast endpoints available for {location_name}")
+        return []
+
+    window_end = reference_now + timedelta(hours=24)
+
+    for forecast_url in forecast_urls:
+        try:
+            response = session.get(forecast_url, timeout=10)
+            response.raise_for_status()
+            periods = response.json().get('properties', {}).get('periods', [])
+            if not periods:
+                continue
+
+            upcoming_periods = []
+            for period in periods:
+                start_time = parse_iso_datetime(period.get('startTime'))
+                end_time = parse_iso_datetime(period.get('endTime')) or start_time
+                if not start_time:
+                    continue
+                if start_time < window_end and (end_time is None or end_time > reference_now):
+                    upcoming_periods.append(period)
+
+            if upcoming_periods:
+                return upcoming_periods
+        except requests.exceptions.RequestException as forecast_error:
+            logger.warning(f"Forecast lookup failed for {location_name} ({forecast_url}): {forecast_error}")
+
+    return []
+
+
+def format_timeframe(start_time, end_time):
+    """Format an approximate UTC timeframe for a risk summary."""
+    if not start_time and not end_time:
+        return "Next 24 hours"
+    start_text = (start_time or end_time).strftime('%b %d %H:%M UTC')
+    end_text = (end_time or start_time).strftime('%b %d %H:%M UTC')
+    return f"{start_text} to {end_text}"
+
+
+def parse_forecast_risks_24h(periods):
+    """Infer practical 24h risk categories from NWS forecast periods."""
+    category_matches = {category: [] for category in FORECAST_RISK_KEYWORDS}
+
+    for period in periods:
+        text_parts = [
+            period.get('name', ''),
+            period.get('shortForecast', ''),
+            period.get('detailedForecast', ''),
+            period.get('windSpeed', ''),
+        ]
+        combined_text = ' '.join(part for part in text_parts if part).lower()
+        if not combined_text:
+            continue
+
+        start_time = parse_iso_datetime(period.get('startTime'))
+        end_time = parse_iso_datetime(period.get('endTime')) or start_time
+        snippet = (period.get('shortForecast') or period.get('detailedForecast') or period.get('name') or '').strip()
+        if len(snippet) > 160:
+            snippet = f"{snippet[:157]}..."
+        evidence = {
+            'name': period.get('name', 'Forecast Period'),
+            'start': start_time,
+            'end': end_time,
+            'snippet': snippet,
+        }
+
+        for category, keywords in FORECAST_RISK_KEYWORDS.items():
+            if any(keyword in combined_text for keyword in keywords):
+                category_matches[category].append(evidence)
+
+    active_categories = []
+    all_matches = []
+    for category, matches in category_matches.items():
+        if matches:
+            active_categories.append((category, len(matches)))
+            all_matches.extend(matches)
+
+    active_categories.sort(key=lambda item: (-item[1], item[0]))
+    top_categories = [category for category, _ in active_categories[:3]]
+
+    evidence_lines = []
+    for category in top_categories:
+        first_match = category_matches[category][0]
+        evidence_lines.append(f"{category}: {first_match['name']} - {first_match['snippet']}")
+
+    timeframe = "Next 24 hours"
+    if all_matches:
+        starts = [match['start'] for match in all_matches if match.get('start')]
+        ends = [match['end'] for match in all_matches if match.get('end')]
+        timeframe = format_timeframe(min(starts) if starts else None, max(ends) if ends else None)
+
+    return {
+        'has_elevated_risk': bool(top_categories),
+        'top_categories': top_categories,
+        'evidence': evidence_lines,
+        'timeframe': timeframe,
+    }
+
+
+def build_risk_fingerprint(risk_summary):
+    """Build stable fingerprint for per-location digest risk state."""
+    source = json.dumps(
+        {
+            'top_categories': risk_summary.get('top_categories', []),
+            'timeframe': risk_summary.get('timeframe', ''),
+            'evidence': risk_summary.get('evidence', []),
+        },
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    return hashlib.sha256(source.encode('utf-8')).hexdigest()
+
+
+def should_send_daily_digest(state, digest_hour_utc, now_utc):
+    """Return True once/day at or after configured UTC digest hour."""
+    if now_utc.hour < digest_hour_utc:
+        return False
+    today = now_utc.strftime('%Y-%m-%d')
+    return state.get('last_digest_date_utc') != today
+
+
+def classify_event_level(event_type):
+    """Classify alert event type into warning/watch/advisory tiers."""
+    text = (event_type or '').lower()
+    if 'warning' in text:
+        return 'warning'
+    if 'watch' in text:
+        return 'watch'
+    if 'advisory' in text:
+        return 'advisory'
+    return 'other'
+
+
+def build_immediate_escalation_fingerprint(nws_alerts):
+    """Build comparable snapshot of current critical alert intensity."""
+    events = sorted({a.get('event_type', '') for a in nws_alerts if a.get('event_type')})
+    warning_events = sorted(
+        {event for event in events if classify_event_level(event) == 'warning'}
+    )
+    max_severity = 0
+    for alert in nws_alerts:
+        severity = (alert.get('severity') or 'unknown').lower()
+        max_severity = max(max_severity, SEVERITY_RANK.get(severity, 0))
+
+    return {
+        'events': events,
+        'warning_events': warning_events,
+        'max_severity': max_severity,
+    }
+
+
+def is_immediate_escalation(previous_fingerprint, current_fingerprint):
+    """Return True when active critical alerts materially worsen."""
+    current_events = set(current_fingerprint.get('events', []))
+    if not current_events:
+        return False
+
+    if not previous_fingerprint:
+        return True
+
+    previous_events = set(previous_fingerprint.get('events', []))
+    previous_warnings = set(previous_fingerprint.get('warning_events', []))
+    current_warnings = set(current_fingerprint.get('warning_events', []))
+
+    if current_fingerprint.get('max_severity', 0) > previous_fingerprint.get('max_severity', 0):
+        return True
+    if current_warnings - previous_warnings:
+        return True
+    if current_events - previous_events:
+        return True
+    if current_warnings and not previous_warnings:
+        return True
+
+    return False
+
+
 def parse_nws_alerts(features):
     """Find critical alerts and prepare alert details for email.
 
@@ -498,6 +823,7 @@ def parse_nws_alerts(features):
                 'id': alert_id,
                 'dedupe_key': dedupe_key,
                 'event_type': event,
+                'severity': severity,
                 'text': alert_text,
                 'area': area_desc,
             })
@@ -622,8 +948,9 @@ Your weather alerts are configured and ready to receive notifications.
 Features:
   • Monitors US locations for NWS critical alerts (Warnings, Watches)
   • Alert types monitored: Tornado, Flood, Severe Thunderstorm, Winter Storm, Extreme Cold/Heat, Hurricane, High Wind, Red Flag, and more
-  • Sends alerts immediately when warnings/watches are issued
-  • Deduplication prevents repeated alerts for the same advisory
+  • Sends one 24-hour risk digest daily (default 11:00 UTC)
+  • Sends immediate emails only when active critical alerts escalate
+  • Deduplication + state tracking reduce repeat noise
 
 This is an automated message.
         """
@@ -685,6 +1012,95 @@ This is an automated alert from Weather Monitor.
         return False
 
 
+def send_daily_digest_email(sender_email, sender_password, recipient_emails, digest_rows):
+    """Send one concise 24h risk digest email."""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = ', '.join(recipient_emails)
+        msg['Subject'] = f"📊 Weather Monitor - 24h Risk Digest ({len(digest_rows)} locations)"
+
+        if digest_rows:
+            lines = []
+            for idx, row in enumerate(digest_rows, start=1):
+                lines.append(f"{idx}. {row['location']}")
+                lines.append(f"   Risks: {', '.join(row['top_categories'])}")
+                lines.append(f"   Timeframe: {row['timeframe']}")
+                for evidence in row['evidence']:
+                    lines.append(f"   - {evidence}")
+                lines.append("")
+            details = '\n'.join(lines)
+        else:
+            details = "No elevated weather risks identified for monitored US locations in the next 24 hours."
+
+        body = f"""
+WEATHER MONITOR - 24 HOUR RISK DIGEST
+{'=' * 50}
+
+Time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}
+Locations with elevated risk: {len(digest_rows)}
+
+{details}
+
+This is an automated message from Weather Monitor.
+"""
+
+        msg.attach(MIMEText(body, 'plain'))
+
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+
+        logger.info(f"24h risk digest email sent with {len(digest_rows)} elevated-risk locations")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send 24h risk digest email: {e}")
+        return False
+
+
+def send_immediate_escalation_email(sender_email, sender_password, recipient_emails, escalation_rows):
+    """Send one immediate escalation alert email for materially worsened risk."""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = ', '.join(recipient_emails)
+        msg['Subject'] = f"🚨 Weather Monitor - Immediate Escalation Alert ({len(escalation_rows)} locations)"
+
+        lines = []
+        for idx, row in enumerate(escalation_rows, start=1):
+            lines.append(f"{idx}. {row['location']}")
+            lines.append(f"   Event: {row['event_type']}")
+            lines.append(f"   {row['text'].replace(chr(10), chr(10) + '   ')}")
+            lines.append("")
+
+        body = f"""
+WEATHER MONITOR - IMMEDIATE ESCALATION ALERT
+{'=' * 50}
+
+Time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}
+Locations with escalations: {len(escalation_rows)}
+
+Details:
+{chr(10).join(lines)}
+
+This is an automated alert from Weather Monitor.
+"""
+
+        msg.attach(MIMEText(body, 'plain'))
+
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+
+        logger.info(f"Immediate escalation email sent with {len(escalation_rows)} alert entries")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send immediate escalation email: {e}")
+        return False
+
+
 def main():
     """Main weather monitoring loop"""
     logger.info("Starting weather alert check for multiple locations...")
@@ -710,6 +1126,12 @@ def main():
     nws_contact = config.get('nws_contact') or os.getenv('NWS_CONTACT')
     nws_session = make_nws_session(nws_contact)
 
+    daily_digest_enabled = read_bool_setting(config, 'daily_digest_enabled', True)
+    daily_digest_hour_utc = max(0, min(23, read_int_setting(config, 'daily_digest_hour_utc', 11)))
+    digest_send_if_empty = read_bool_setting(config, 'digest_send_if_empty', False)
+    immediate_alerts_enabled = read_bool_setting(config, 'immediate_alerts_enabled', True)
+    immediate_escalation_only = read_bool_setting(config, 'immediate_escalation_only', True)
+
     # Check if TEST_MODE is enabled
     test_mode = os.getenv('TEST_MODE', 'false').lower() == 'true'
 
@@ -730,10 +1152,16 @@ def main():
 
     # Load previously sent alerts
     sent_alerts = load_sent_alerts()
+    monitor_state = load_monitor_state()
+    immediate_state = monitor_state.setdefault('last_immediate_escalation_fingerprint_by_location', {})
+
+    now_utc = datetime.now(UTC)
+    immediate_email_rows = []
+    digest_rows = []
+    digest_fingerprints = {}
+    alerts_sent = 0
 
     # Check weather for each location
-    alerts_sent = 0
-    run_alerts = []
     for location in locations:
         location_name = location.get('name', 'Unknown')
         lat = location.get('lat')
@@ -750,49 +1178,100 @@ def main():
         if country.upper() == 'US':
             logger.info(f"Fetching National Weather Service alerts for {location_name}...")
             nws_features = get_nws_alerts(lat, lon, location_name, session=nws_session)
+            nws_alerts = parse_nws_alerts(nws_features) if nws_features else []
 
-            if nws_features:
-                nws_alerts = parse_nws_alerts(nws_features)
+            current_immediate_fp = build_immediate_escalation_fingerprint(nws_alerts)
+            previous_immediate_fp = immediate_state.get(location_name)
+            location_escalation = is_immediate_escalation(previous_immediate_fp, current_immediate_fp)
+            location_new_alert_rows = []
+            location_new_alert_keys = []
 
-                if nws_alerts:
-                    # Create unique alert keys for each alert
+            if nws_alerts:
+                for alert_data in nws_alerts:
+                    event_type = alert_data.get('event_type', 'NWS Alert')
+                    alert_dedupe_key = alert_data.get('dedupe_key') or alert_data.get('id', '')
+                    alert_text = alert_data.get('text', '')
+                    alert_key = f"{location_name}_{alert_dedupe_key}"
+
+                    if alert_key not in sent_alerts:
+                        location_new_alert_rows.append({
+                            'location': location_name,
+                            'event_type': event_type,
+                            'text': alert_text,
+                        })
+                        location_new_alert_keys.append(alert_key)
+                    else:
+                        logger.debug(f"Alert already processed: {alert_key}")
+
+                should_add_immediate_rows = (
+                    (immediate_escalation_only and location_escalation) or
+                    (not immediate_escalation_only and bool(location_new_alert_rows))
+                )
+                if immediate_alerts_enabled and should_add_immediate_rows:
                     for alert_data in nws_alerts:
-                        event_type = alert_data.get('event_type', 'NWS Alert')
-                        alert_dedupe_key = alert_data.get('dedupe_key') or alert_data.get('id', '')
-                        alert_text = alert_data.get('text', '')
-                        # Use location + stable content key for uniqueness across runs
-                        alert_key = f"{location_name}_{alert_dedupe_key}"
-
-                        if alert_key not in sent_alerts:
-                            run_alerts.append({
-                                'location': location_name,
-                                'event_type': event_type,
-                                'text': alert_text,
-                            })
-                            sent_alerts[alert_key] = datetime.now(UTC).isoformat()
-                            alerts_sent += 1
-                        else:
-                            logger.debug(f"Alert already processed: {alert_key}")
+                        immediate_email_rows.append({
+                            'location': location_name,
+                            'event_type': alert_data.get('event_type', 'NWS Alert'),
+                            'text': alert_data.get('text', ''),
+                        })
+                    for alert_key in location_new_alert_keys:
+                        sent_alerts[alert_key] = now_utc.isoformat()
+                        alerts_sent += 1
+                    immediate_state[location_name] = current_immediate_fp
+                elif immediate_escalation_only and location_escalation:
+                    logger.info(
+                        f"Escalation detected for {location_name}, but immediate alerts are disabled by config."
+                    )
                 else:
-                    logger.info(f"No critical alerts for {location_name}")
+                    logger.info(f"No immediate escalation for {location_name}")
             else:
-                logger.info(f"No alerts returned from NWS for {location_name}")
+                logger.info(f"No critical alerts for {location_name}")
+                immediate_state.pop(location_name, None)
+
+            forecast_periods = get_nws_forecast_periods_24h(lat, lon, location_name, nws_session, now_utc=now_utc)
+            risk_summary = parse_forecast_risks_24h(forecast_periods)
+            digest_fingerprints[location_name] = build_risk_fingerprint(risk_summary)
+
+            if risk_summary['has_elevated_risk']:
+                digest_rows.append({
+                    'location': location_name,
+                    'top_categories': risk_summary['top_categories'],
+                    'evidence': risk_summary['evidence'],
+                    'timeframe': risk_summary['timeframe'],
+                })
         else:
             logger.debug(f"Skipping {location_name} - only US locations use NWS alerts")
 
-    # Send one aggregated email per run
-    if run_alerts:
-        send_run_summary_email(
+    if daily_digest_enabled and should_send_daily_digest(monitor_state, daily_digest_hour_utc, now_utc):
+        if digest_rows or digest_send_if_empty:
+            send_daily_digest_email(
+                config['sender_email'],
+                config['sender_password'],
+                recipient_emails,
+                digest_rows
+            )
+        else:
+            logger.info("Digest hour reached; no elevated 24h risks found, digest email skipped.")
+        monitor_state['last_digest_date_utc'] = now_utc.strftime('%Y-%m-%d')
+        monitor_state['last_digest_fingerprint_by_location'] = digest_fingerprints
+    else:
+        logger.info("Daily digest not sent in this run (disabled, not scheduled yet, or already sent today).")
+
+    if immediate_alerts_enabled and immediate_email_rows:
+        send_immediate_escalation_email(
             config['sender_email'],
             config['sender_password'],
             recipient_emails,
-            run_alerts
+            immediate_email_rows
         )
+    elif not immediate_alerts_enabled:
+        logger.info("Immediate alerts are disabled by configuration.")
     else:
-        logger.info("No new critical alerts to email in this run.")
+        logger.info("No immediate escalation alerts to email in this run.")
 
     # Save sent alerts
     save_sent_alerts(sent_alerts)
+    save_monitor_state(monitor_state)
 
     logger.info(f"Alert check complete. Critical alerts sent: {alerts_sent}")
 
