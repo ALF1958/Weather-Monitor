@@ -7,9 +7,10 @@ Uses National Weather Service (NWS) for US locations and OpenWeatherMap for inte
 
 import os
 import json
+import hashlib
 import logging
 import smtplib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -62,11 +63,12 @@ CRITICAL_ALERT_TYPES = {
     'Heavy Snow Warning',
     'Heavy Snow Watch',
 }
+CRITICAL_ALERT_KEYWORDS = tuple(alert_type.lower() for alert_type in CRITICAL_ALERT_TYPES)
 
 # Track sent alerts to avoid duplicates
 SENT_ALERTS_FILE = 'sent_alerts.json'
 
-# Persistent cache file for NWS /points -> alerts URL (reduces calls across runs)
+# Persistent cache file for legacy NWS /points -> alerts URL fallback data
 NWS_POINTS_CACHE_FILE = 'nws_points_cache.json'
 # Default TTL for cached points (hours)
 NWS_CACHE_TTL_HOURS = int(os.getenv('NWS_CACHE_TTL_HOURS', '24'))
@@ -96,15 +98,51 @@ def load_config():
         # Optional contact string for NWS User-Agent: set NWS_CONTACT env var or provide in config
         'nws_contact': os.getenv('NWS_CONTACT'),
         'locations': [
-            {'name': 'New York, USA', 'lat': 40.7128, 'lon': -74.0060, 'country': 'US'},
-            {'name': 'London, UK', 'lat': 51.5074, 'lon': -0.1278, 'country': 'GB'},
-            {'name': 'Tokyo, Japan', 'lat': 35.6762, 'lon': 139.6503, 'country': 'JP'},
-            {'name': 'Sydney, Australia', 'lat': -33.8688, 'lon': 151.2093, 'country': 'AU'},
-            {'name': 'Toronto, Canada', 'lat': 43.6532, 'lon': -79.3832, 'country': 'CA'},
-            {'name': 'Corpus Christi, USA', 'lat': 27.5705, 'lon': -97.3964, 'country': 'US'},
-            {'name': 'Fort Hood, USA', 'lat': 31.1544, 'lon': -97.8072, 'country': 'US'},
-            {'name': 'Fort Campbell, USA', 'lat': 36.6260, 'lon': -87.4660, 'country': 'US'},
-            {'name': 'Anniston Army Depot, USA', 'lat': 33.7344, 'lon': -85.8084, 'country': 'US'},
+            {'name': 'TSC HAWAII', 'lat': 21.483, 'lon': -158.0827, 'country': 'US'},
+            {'name': 'TSC CORPUS CHRISTI', 'lat': 27.6905, 'lon': -97.2894, 'country': 'US'},
+            {'name': 'TSC FT POLK', 'lat': 31.033, 'lon': -93.183, 'country': 'US'},
+            {'name': 'TSC FT HOOD', 'lat': 31.133, 'lon': -97.7663, 'country': 'US'},
+            {'name': 'TSC FT RUCKER', 'lat': 31.3166, 'lon': -85.7333, 'country': 'US'},
+            {'name': 'TSC FT HUACHUCA', 'lat': 31.55, 'lon': -110.3327, 'country': 'US'},
+            {'name': 'TSC FT BLISS', 'lat': 31.8, 'lon': -106.4158, 'country': 'US'},
+            {'name': 'TSC HUNTER AAF', 'lat': 32.01, 'lon': -81.1461, 'country': 'US'},
+            {'name': 'TSC FT BENNING', 'lat': 32.383, 'lon': -84.883, 'country': 'US'},
+            {'name': 'TSC WHITE SANDS', 'lat': 32.4, 'lon': -106.4, 'country': 'US'},
+            {'name': 'TSC YUMA', 'lat': 32.6538, 'lon': -114.6058, 'country': 'US'},
+            {'name': 'TSC FT GORDON', 'lat': 33.4163, 'lon': -82.133, 'country': 'US'},
+            {'name': 'TSC RED RIVER', 'lat': 33.4166, 'lon': -94.2663, 'country': 'US'},
+            {'name': 'TSC ANNISTON', 'lat': 33.633, 'lon': -85.8663, 'country': 'US'},
+            {'name': 'TSC REDSTONE ARSENAL', 'lat': 34.6166, 'lon': -86.6666, 'country': 'US'},
+            {'name': 'TSC FT SILL', 'lat': 34.65, 'lon': -98.4, 'country': 'US'},
+            {'name': 'TSC MCALESTER', 'lat': 34.833, 'lon': -95.925, 'country': 'US'},
+            {'name': 'TSC FT BRAGG', 'lat': 35.133, 'lon': -78.983, 'country': 'US'},
+            {'name': 'TSC FT IRWIN', 'lat': 35.383, 'lon': -116.5827, 'country': 'US'},
+            {'name': 'TSC JAPAN', 'lat': 35.583, 'lon': 139.4163, 'country': 'JP'},
+            {'name': 'TSC CARROLL', 'lat': 36, 'lon': 128.4166, 'country': 'KR'},
+            {'name': 'TSC FT CAMPBELL', 'lat': 36.6663, 'lon': -87.483, 'country': 'US'},
+            {'name': 'TSC CP HUMPHRIES', 'lat': 36.9166, 'lon': 127.05, 'country': 'KR'},
+            {'name': 'TSC FT EUSTIS', 'lat': 37.15, 'lon': -76.583, 'country': 'US'},
+            {'name': 'TSC FT LEONDARDWOOD', 'lat': 37.733, 'lon': -92.1163, 'country': 'US'},
+            {'name': 'TSC FT KNOX', 'lat': 37.9, 'lon': -85.9833, 'country': 'US'},
+            {'name': 'TSC SACRAMENTO', 'lat': 38.4891, 'lon': -121.395, 'country': 'US'},
+            {'name': 'TSC FT CARSON', 'lat': 38.683, 'lon': -104.7658, 'country': 'US'},
+            {'name': 'TSC FT MEADE', 'lat': 39.1, 'lon': -76.7163, 'country': 'US'},
+            {'name': 'TSC FT RILEY', 'lat': 39.1663, 'lon': -96.8163, 'country': 'US'},
+            {'name': 'TSC ABERDEEN', 'lat': 39.4913, 'lon': -76.1358, 'country': 'US'},
+            {'name': 'TSC LETTERKENNY', 'lat': 39.983, 'lon': -77.65, 'country': 'US'},
+            {'name': 'TSC FT DIX', 'lat': 40.0166, 'lon': -74.8666, 'country': 'US'},
+            {'name': 'TSC DUGWAY', 'lat': 40.183, 'lon': -112.9327, 'country': 'US'},
+            {'name': 'TSC TOBYHANNA', 'lat': 41.183, 'lon': -75.4163, 'country': 'US'},
+            {'name': 'TSC ROCK ISLAND', 'lat': 41.5352, 'lon': -90.5686, 'country': 'US'},
+            {'name': 'TSC WARREN', 'lat': 42.5, 'lon': -83.4, 'country': 'US'},
+            {'name': 'TSC FT DRUM', 'lat': 44.05, 'lon': -75.733, 'country': 'US'},
+            {'name': 'TSC JBLM FT LEWIS', 'lat': 47.083, 'lon': -122.6, 'country': 'US'},
+            {'name': 'LAB NUCLEAR REF', 'lat': 49.2, 'lon': 7.6, 'country': 'DE'},
+            {'name': 'TSC KAISERSLAUTERN', 'lat': 49.4475, 'lon': 7.8391, 'country': 'DE'},
+            {'name': 'TSC ILLESHEIM', 'lat': 49.4805, 'lon': 10.3861, 'country': 'DE'},
+            {'name': 'TSC VILSECK', 'lat': 49.6286, 'lon': 11.785, 'country': 'DE'},
+            {'name': 'TSC WIESBADEN', 'lat': 49.9691, 'lon': 8.1186, 'country': 'DE'},
+            {'name': 'TSC WAINWRIGHT', 'lat': 64.833, 'lon': -147.5827, 'country': 'US'},
         ]
     }
 
@@ -160,7 +198,10 @@ def is_cache_entry_valid(entry):
         if not cached_at:
             return False
         ts = datetime.fromisoformat(cached_at)
-        if datetime.utcnow() - ts <= timedelta(hours=NWS_CACHE_TTL_HOURS):
+        # Older cache files stored UTC timestamps without timezone info.
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if datetime.now(UTC) - ts <= timedelta(hours=NWS_CACHE_TTL_HOURS):
             return True
         return False
     except Exception:
@@ -203,13 +244,175 @@ def make_nws_session(contact=None):
     return sess
 
 
+def fetch_nws_alert_features(session, alerts_url, location_name):
+    """Fetch and return raw NWS alert features from a specific NWS alerts URL.
+
+    In the NWS API, "features" are the individual alert objects in the response.
+    Returns a list of alert features when alerts are present, or None when the
+    response contains no active alerts for the location.
+    """
+    response = session.get(alerts_url, timeout=10)
+    response.raise_for_status()
+    alerts_data = response.json()
+
+    features = alerts_data.get('features', [])
+    if features:
+        logger.info(f"Found {len(features)} alerts for {location_name}")
+        return features
+
+    return None
+
+
+def get_zone_id_from_url(zone_url):
+    """Extract an NWS zone ID from a zone URL.
+
+    NWS zones are geographic areas used by the National Weather Service
+    to group and publish weather alerts.
+
+    Parameters:
+        zone_url: Full NWS zone URL string (for example,
+            "https://api.weather.gov/zones/forecast/KYZ007").
+
+    Returns:
+        Zone ID string (for example, KYZ007), or None when unavailable.
+    """
+    if not zone_url:
+        return None
+    return zone_url.rstrip('/').split('/')[-1]
+
+
+def get_nws_point_metadata(lat, lon, cache_key, location_name, session):
+    """Return /points metadata needed for broader NWS alert matching.
+
+    Includes:
+      - forecast zone ID
+      - county zone ID
+      - legacy alerts URL
+
+    Parameters:
+        lat: Latitude for the location.
+        lon: Longitude for the location.
+        cache_key: Cache key in "lat,lon" format.
+        location_name: Human-friendly location name for logging.
+        session: Requests session used for API calls.
+
+    Returns:
+        Dictionary with cached_at, zone_ids, and alerts_url keys.
+    """
+    entry = NWS_POINTS_CACHE.get(cache_key)
+    if entry and is_cache_entry_valid(entry):
+        if entry.get('zone_ids') or entry.get('alerts_url'):
+            logger.debug(f"Using cached NWS points metadata for {location_name}")
+            return entry
+
+    points_url = f"https://api.weather.gov/points/{lat},{lon}"
+    response = session.get(points_url, timeout=10)
+    response.raise_for_status()
+    points_data = response.json()
+    props = points_data.get('properties', {})
+
+    forecast_zone_id = get_zone_id_from_url(props.get('forecastZone'))
+    county_zone_id = get_zone_id_from_url(props.get('county'))
+    zone_ids = []
+    # Forecast zone and county zone can occasionally be the same ID.
+    # Keep only unique IDs so we do not query the same zone twice.
+    if forecast_zone_id:
+        zone_ids.append(forecast_zone_id)
+    if county_zone_id and county_zone_id != forecast_zone_id:
+        zone_ids.append(county_zone_id)
+
+    metadata = {
+        'zone_ids': zone_ids,
+        'alerts_url': props.get('alerts'),
+        'cached_at': datetime.now(UTC).isoformat()
+    }
+    NWS_POINTS_CACHE[cache_key] = metadata
+    save_nws_points_cache()
+    return metadata
+
+
+def merge_alert_features(feature_groups):
+    """Merge alert feature lists while removing duplicates.
+
+    In NWS API responses, each "feature" is one alert record.
+
+    Parameters:
+        feature_groups: List of feature lists to merge.
+
+    Returns:
+        Merged feature list with duplicates removed, or None when empty.
+    """
+    merged = []
+    seen_keys = set()
+
+    for features in feature_groups:
+        if not features:
+            continue
+        for feature in features:
+            feature_id = feature.get('id')
+            if feature_id:
+                dedupe_key = feature_id
+            else:
+                props = feature.get('properties', {})
+                # Older or incomplete NWS alert records may omit a stable
+                # top-level "id". In that case, use event + headline + timing
+                # fields as a best-effort identity key to avoid duplicate
+                # notifications. Without this check, users may receive repeat
+                # emails for the same alert.
+                # This tuple (a grouped set of values) acts like a backup ID.
+                dedupe_key = (
+                    props.get('event', ''),
+                    props.get('headline', ''),
+                    props.get('effective', ''),
+                    props.get('expires', ''),
+                )
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+            merged.append(feature)
+
+    return merged if merged else None
+
+
+def get_nws_alerts_by_zone(zone_ids, location_name, session):
+    """Fetch alerts by NWS zone IDs and return merged features.
+
+    When multiple zone IDs are provided, this function queries each zone
+    separately and combines the results.
+
+    Parameters:
+        zone_ids: List of NWS zone IDs, such as ["KYZ007", "KYC047"].
+        location_name: Human-friendly location name for logging.
+        session: Requests session used for API calls.
+
+    Returns:
+        Merged alert features list, or None when no alerts are found.
+    """
+    if not zone_ids:
+        return None
+
+    zone_features = []
+    for zone_id in zone_ids:
+        alerts_url = f"https://api.weather.gov/alerts/active?zone={zone_id}"
+        try:
+            features = fetch_nws_alert_features(session, alerts_url, location_name)
+            if features:
+                logger.info(f"Found alerts for {location_name} in weather zone {zone_id}")
+                zone_features.append(features)
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Zone-based NWS alert lookup failed for {location_name} ({zone_id}): {e}")
+
+    return merge_alert_features(zone_features)
+
+
 def get_nws_alerts(lat, lon, location_name, session=None):
     """Fetch alerts from National Weather Service (US only).
 
     Uses a requests.Session with appropriate User-Agent and Accept headers.
-    Caches the points -> alerts URL mapping on-disk to reduce calls to /points
-    across runs. The persistent cache respects a TTL (default 24 hours) and is
-    configurable via NWS_CACHE_TTL_HOURS env var.
+    First queries NWS by zone/county granularity using /points metadata, then
+    performs a point-based lookup as a secondary check. If both methods return
+    data, features are merged and deduplicated. The /points metadata is cached
+    with a TTL (default 24 hours) configurable via NWS_CACHE_TTL_HOURS.
     """
     sess = session or make_nws_session()
     cache_key = f"{lat},{lon}"
@@ -219,52 +422,53 @@ def get_nws_alerts(lat, lon, location_name, session=None):
         if not NWS_POINTS_CACHE:
             load_nws_points_cache()
 
-        alerts_url = None
-        entry = NWS_POINTS_CACHE.get(cache_key)
-        if entry and is_cache_entry_valid(entry):
-            alerts_url = entry.get('alerts_url')
-            logger.debug(f"Using cached alerts URL for {location_name}")
+        zone_alert_features = None
+        try:
+            point_metadata = get_nws_point_metadata(lat, lon, cache_key, location_name, sess)
+            zone_ids = point_metadata.get('zone_ids', [])
+            zone_alert_features = get_nws_alerts_by_zone(zone_ids, location_name, sess)
+        except requests.exceptions.RequestException as metadata_error:
+            logger.warning(f"Could not retrieve weather zone information for {location_name}: {metadata_error}")
 
-        if not alerts_url:
-            # Get the grid point for this location
-            points_url = f"https://api.weather.gov/points/{lat},{lon}"
-            points_response = sess.get(points_url, timeout=10)
-            points_response.raise_for_status()
-            points_data = points_response.json()
+        point_alerts_url = f"https://api.weather.gov/alerts/active?point={lat},{lon}"
+        point_alert_features = None
+        try:
+            point_alert_features = fetch_nws_alert_features(sess, point_alerts_url, location_name)
+            if point_alert_features:
+                logger.info(f"NWS point-based match for {location_name}")
+        except requests.exceptions.RequestException as point_error:
+            logger.warning(f"Point-based NWS alert lookup failed for {location_name}: {point_error}")
 
-            # Get the alerts URL from the points data
-            alerts_url = points_data.get('properties', {}).get('alerts')
-            if not alerts_url:
-                logger.info(f"No alerts URL available for {location_name}")
-                return None
-
-            # Cache the alerts URL with timestamp
-            NWS_POINTS_CACHE[cache_key] = {
-                'alerts_url': alerts_url,
-                'cached_at': datetime.utcnow().isoformat()
-            }
-            # Persist updated cache
-            save_nws_points_cache()
-
-        # Fetch alerts
-        alerts_response = sess.get(alerts_url, timeout=10)
-        alerts_response.raise_for_status()
-        alerts_data = alerts_response.json()
-
-        features = alerts_data.get('features', [])
-        if features:
-            logger.info(f"Found {len(features)} alerts for {location_name}")
-            return features
+        merged_features = merge_alert_features([zone_alert_features, point_alert_features])
+        if merged_features:
+            if zone_alert_features and point_alert_features:
+                logger.info(
+                    f"Found alerts for {location_name} using both weather zone and location point searches"
+                )
+            elif zone_alert_features:
+                logger.info(f"Found alerts for {location_name} using weather zone search")
+            return merged_features
 
         return None
-
     except requests.exceptions.RequestException as e:
         logger.warning(f"Error fetching NWS alerts for {location_name}: {e}")
         return None
 
 
 def parse_nws_alerts(features):
-    """Parse NWS alert features into critical alerts only"""
+    """Find critical alerts and prepare alert details for email.
+
+    "Critical alerts" here means severe events such as tornadoes, floods,
+    and other dangerous weather listed in CRITICAL_ALERT_TYPES.
+    Matching uses a case-insensitive substring check.
+    "Case-insensitive" means it matches words no matter how they are
+    capitalized (for example, "tornado warning" or "Tornado Warning").
+    A "substring check" means it looks for a critical alert name anywhere
+    inside the full event text.
+    It also allows extra words in the event text, such as
+    "Tornado Warning for Northern Area".
+    Returns a list of alert dictionaries (id, event_type, text, area).
+    """
     alerts = []
 
     for feature in features:
@@ -276,20 +480,81 @@ def parse_nws_alerts(features):
         headline = props.get('headline', '')
         effective = props.get('effective', '')
         expires = props.get('expires', '')
+        area_desc = props.get('areaDesc', 'Unknown area')
+        alert_id = build_nws_alert_id(feature, props, event, effective, expires, area_desc)
+
+        event_lower = event.lower()
+        is_critical_alert = any(critical in event_lower for critical in CRITICAL_ALERT_KEYWORDS)
 
         # ONLY include critical alert types
-        if event in CRITICAL_ALERT_TYPES:
+        if is_critical_alert:
+            dedupe_key = build_alert_dedupe_key(event, headline, area_desc, effective, expires)
             alert_text = f"{event} ({severity})"
             if headline:
                 alert_text += f"\n{headline}"
             if effective or expires:
                 alert_text += f"\nEffective: {effective} | Expires: {expires}"
-            alerts.append(alert_text)
-            logger.info(f"Critical alert identified: {event} for {props.get('areaDesc', 'Unknown area')}")
+            alerts.append({
+                'id': alert_id,
+                'dedupe_key': dedupe_key,
+                'event_type': event,
+                'text': alert_text,
+                'area': area_desc,
+            })
+            logger.info(f"Critical alert identified: {event} for {area_desc}")
         else:
             logger.debug(f"Non-critical alert filtered out: {event}")
 
-    return alerts if alerts else None
+    return alerts
+
+
+def build_nws_alert_id(feature, props, event, effective, expires, area_desc):
+    """Create a unique ID for one NWS alert.
+
+    First, this tries to use the official ID sent by NWS
+    (for example: "NWS-ALERTS-AL12345").
+    NWS may send that ID inside a full URL, and this function keeps only the
+    last part of the URL so the saved key stays short and consistent.
+    Example: from "https://api.weather.gov/alerts/NWS-ALERTS-AL12345",
+    it keeps "NWS-ALERTS-AL12345".
+    If NWS does not provide an ID, it builds a backup ID that stays the same
+    for the same alert details by turning those details into a unique code
+    using a SHA-256 hash function, so duplicate emails are avoided.
+    Returns the alert ID as a string.
+    """
+    feature_id = feature.get('id', '') or props.get('id', '')
+    alert_id = feature_id.split('/')[-1] if feature_id else ''
+
+    if alert_id:
+        return alert_id
+
+    fallback_source = json.dumps(
+        {
+            'event': event,
+            'effective': effective,
+            'expires': expires,
+            'area_desc': area_desc,
+        },
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    return f"fallback-{hashlib.sha256(fallback_source.encode('utf-8')).hexdigest()}"
+
+
+def build_alert_dedupe_key(event, headline, area_desc, effective, expires):
+    """Create a stable dedupe key for an alert based on alert content."""
+    source = json.dumps(
+        {
+            'event': (event or '').strip().lower(),
+            'headline': (headline or '').strip().lower(),
+            'area_desc': (area_desc or '').strip().lower(),
+            'effective': (effective or '').strip().lower(),
+            'expires': (expires or '').strip().lower(),
+        },
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    return hashlib.sha256(source.encode('utf-8')).hexdigest()
 
 
 def send_alert_email(sender_email, sender_password, recipient_emails, location_name, conditions, alert_type='NWS Alert'):
@@ -379,6 +644,47 @@ This is an automated message.
         return False
 
 
+def send_run_summary_email(sender_email, sender_password, recipient_emails, run_alerts):
+    """Send one email containing all new alerts found in this monitor run."""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = ', '.join(recipient_emails)
+        msg['Subject'] = f"🚨 Weather Monitor - Run Summary ({len(run_alerts)} new alerts)"
+
+        lines = []
+        for idx, a in enumerate(run_alerts, start=1):
+            lines.append(f"{idx}. {a['location']} - {a['event_type']}")
+            lines.append(f"   {a['text'].replace(chr(10), chr(10) + '   ')}")
+            lines.append("")
+
+        body = f"""
+WEATHER MONITOR RUN SUMMARY
+{'=' * 50}
+
+Time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}
+New alerts in this run: {len(run_alerts)}
+
+Details:
+{chr(10).join(lines)}
+
+This is an automated alert from Weather Monitor.
+"""
+
+        msg.attach(MIMEText(body, 'plain'))
+
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+
+        logger.info(f"Run summary email sent with {len(run_alerts)} alerts")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send run summary email: {e}")
+        return False
+
+
 def main():
     """Main weather monitoring loop"""
     logger.info("Starting weather alert check for multiple locations...")
@@ -427,6 +733,7 @@ def main():
 
     # Check weather for each location
     alerts_sent = 0
+    run_alerts = []
     for location in locations:
         location_name = location.get('name', 'Unknown')
         lat = location.get('lat')
@@ -449,23 +756,21 @@ def main():
 
                 if nws_alerts:
                     # Create unique alert keys for each alert
-                    for alert_text in nws_alerts:
-                        # Extract event type from alert text (first line)
-                        event_type = alert_text.split('\n')[0].split('(')[0].strip()
-                        # Use event type + location + timestamp for uniqueness
-                        alert_key = f"{location_name}_{event_type}_{datetime.now().strftime('%Y-%m-%d-%H:%M')}"
+                    for alert_data in nws_alerts:
+                        event_type = alert_data.get('event_type', 'NWS Alert')
+                        alert_dedupe_key = alert_data.get('dedupe_key') or alert_data.get('id', '')
+                        alert_text = alert_data.get('text', '')
+                        # Use location + stable content key for uniqueness across runs
+                        alert_key = f"{location_name}_{alert_dedupe_key}"
 
                         if alert_key not in sent_alerts:
-                            if send_alert_email(
-                                config['sender_email'],
-                                config['sender_password'],
-                                recipient_emails,
-                                location_name,
-                                [alert_text],
-                                alert_type=event_type
-                            ):
-                                sent_alerts[alert_key] = datetime.now().isoformat()
-                                alerts_sent += 1
+                            run_alerts.append({
+                                'location': location_name,
+                                'event_type': event_type,
+                                'text': alert_text,
+                            })
+                            sent_alerts[alert_key] = datetime.now(UTC).isoformat()
+                            alerts_sent += 1
                         else:
                             logger.debug(f"Alert already processed: {alert_key}")
                 else:
@@ -474,6 +779,17 @@ def main():
                 logger.info(f"No alerts returned from NWS for {location_name}")
         else:
             logger.debug(f"Skipping {location_name} - only US locations use NWS alerts")
+
+    # Send one aggregated email per run
+    if run_alerts:
+        send_run_summary_email(
+            config['sender_email'],
+            config['sender_password'],
+            recipient_emails,
+            run_alerts
+        )
+    else:
+        logger.info("No new critical alerts to email in this run.")
 
     # Save sent alerts
     save_sent_alerts(sent_alerts)
