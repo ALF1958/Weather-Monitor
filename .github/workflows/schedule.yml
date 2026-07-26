@@ -15,11 +15,30 @@ on:
           - 'false'
           - 'true'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: weather-monitor-scheduled
+  cancel-in-progress: false
+
 jobs:
   run-monitor:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Restore monitor state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            monitor_state.json
+            sent_alerts.json
+            nws_points_cache.json
+          key: weather-monitor-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            weather-monitor-state-${{ github.ref_name }}-
+            weather-monitor-state-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -34,7 +53,22 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAILS: ${{ secrets.RECIPIENT_EMAILS }}
+          NWS_CONTACT: ${{ secrets.NWS_CONTACT }}
+          DAILY_DIGEST_ENABLED: 'true'
+          DAILY_DIGEST_HOUR_UTC: '11'
+          DIGEST_SEND_IF_EMPTY: 'true'
+          IMMEDIATE_ALERTS_ENABLED: 'true'
+          IMMEDIATE_ESCALATION_ONLY: 'true'
           CONFIG_PATH: config.example.json
-          TEST_MODE: ${{ github.event.inputs.test_mode }}
+          TEST_MODE: ${{ github.event.inputs.test_mode || 'false' }}
         run: |
           python weather_monitor.py
+      - name: Save monitor state cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            monitor_state.json
+            sent_alerts.json
+            nws_points_cache.json
+          key: weather-monitor-state-${{ github.ref_name }}-${{ github.run_id }}

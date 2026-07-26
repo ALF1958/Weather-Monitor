@@ -29,6 +29,16 @@ These let you control when and how emails are sent.
 | `IMMEDIATE_ALERTS_ENABLED` | `true` | Set to `false` to stop all immediate escalation emails. |
 | `IMMEDIATE_ESCALATION_ONLY` | `true` | If `true` (recommended), immediate emails are only sent when an alert *worsens*. If `false`, an email is sent for every newly seen alert. |
 
+For this repository's GitHub Actions workflow, the recommended operational defaults are explicitly set:
+
+- `DAILY_DIGEST_ENABLED=true`
+- `DAILY_DIGEST_HOUR_UTC=11`
+- `DIGEST_SEND_IF_EMPTY=true`
+- `IMMEDIATE_ALERTS_ENABLED=true`
+- `IMMEDIATE_ESCALATION_ONLY=true`
+
+That combination is designed to guarantee one digest per UTC day while suppressing non-escalation immediate noise.
+
 ### What is UTC?
 UTC is a global standard time with no daylight saving. Common offsets from UTC:
 - US Eastern: UTC−5 (winter) / UTC−4 (summer)

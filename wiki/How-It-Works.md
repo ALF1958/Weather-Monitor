@@ -107,7 +107,9 @@ Based on the priority band and status, the program generates a plain-language ac
 
 Once per day, at the configured UTC hour, the program sends a digest email listing all locations that have any elevated forecast risk in the next 24 hours.
 
-If no locations have elevated risk and `DIGEST_SEND_IF_EMPTY` is `false` (the default), the digest is skipped that day.
+If no locations have elevated risk and `DIGEST_SEND_IF_EMPTY` is `false`, the digest is skipped that day.
+
+In this repository's GitHub Actions workflow, `DIGEST_SEND_IF_EMPTY` is set to `true` so one digest is still sent on quiet days.
 
 The digest time is tracked in a state file (`monitor_state.json`) so it fires only once even if the program runs 96 times that day.
 
@@ -140,6 +142,9 @@ After every run the program saves:
 - **`monitor_state.json`** — digest timing, and the fingerprint of each location's last alert state (used to detect escalation on the next run).
 - **`nws_points_cache.json`** — NWS zone/grid metadata cached for up to 24 hours to reduce API calls.
 - **`dashboard_digest.json`** — a machine-readable JSON summary of the full run: all location scores, priority bands, recommended actions, delivery status, and any errors. This can be read by dashboards or monitoring tools.
+
+On GitHub-hosted runners, these files would normally be lost after each run.  
+The workflow restores/saves `monitor_state.json`, `sent_alerts.json`, and `nws_points_cache.json` via cache so the next run can continue from prior state.
 
 ---
 
