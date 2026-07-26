@@ -631,7 +631,7 @@ class TestAggregateEscalationAlerts(unittest.TestCase):
         threat = result[0]['threats'][0]
         self.assertEqual(threat['tag'], '[EXTENDED]')
         self.assertIsNotNone(threat['note'])
-        self.assertIn('->', threat['note'])
+        self.assertIn(' to ', threat['note'])
 
     def test_extended_note_contains_original_and_new_expiry(self):
         rows = [

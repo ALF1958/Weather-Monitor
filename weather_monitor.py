@@ -1211,7 +1211,7 @@ def aggregate_escalation_alerts(rows):
 
                 if newest_expires and oldest_expires and newest_expires > oldest_expires:
                     tag = '[EXTENDED]'
-                    note = f"Original expiry: {oldest_expires} -> Updated: {newest_expires}"
+                    note = f"Original expiration: {oldest_expires} to Updated: {newest_expires}"
                     original_expires = oldest_expires
                 else:
                     tag = '[UPDATED]'
@@ -1281,7 +1281,7 @@ def send_immediate_escalation_email(sender_email, sender_password, recipient_ema
                 effective = threat.get('effective', '')
                 expires = threat.get('expires', '')
                 note = threat.get('note')
-                lines.append(f"   \u2022 {tag} {event_type} | Severity: {severity}")
+                lines.append(f"   * {tag} {event_type} | Severity: {severity}")
                 if effective or expires:
                     lines.append(f"     Effective: {effective} | Expires: {expires}")
                 if note:
