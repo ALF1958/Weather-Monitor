@@ -515,5 +515,226 @@ class TestLoadConfig(unittest.TestCase):
         self.assertIsInstance(cfg.get('locations'), list)
 
 
+class TestIsStaleAlert(unittest.TestCase):
+    """Tests for the _is_stale_alert() helper."""
+
+    def _row(self, message_type='', description='', summary='', text=''):
+        return {
+            'message_type': message_type,
+            'description': description,
+            'summary': summary,
+            'text': text,
+        }
+
+    def test_cancel_message_type_is_stale(self):
+        self.assertTrue(weather_monitor._is_stale_alert(self._row(message_type='Cancel')))
+
+    def test_cancel_case_insensitive(self):
+        self.assertTrue(weather_monitor._is_stale_alert(self._row(message_type='CANCEL')))
+        self.assertTrue(weather_monitor._is_stale_alert(self._row(message_type='cancel')))
+
+    def test_superseded_in_description_is_stale(self):
+        self.assertTrue(weather_monitor._is_stale_alert(
+            self._row(description='This statement has been superseded.')))
+
+    def test_replaced_in_summary_is_stale(self):
+        self.assertTrue(weather_monitor._is_stale_alert(
+            self._row(summary='Alert replaced by newer issuance.')))
+
+    def test_canceled_in_text_is_stale(self):
+        self.assertTrue(weather_monitor._is_stale_alert(
+            self._row(text='Warning canceled due to no further threat.')))
+
+    def test_cancelled_british_spelling_is_stale(self):
+        self.assertTrue(weather_monitor._is_stale_alert(
+            self._row(description='Warning has been cancelled.')))
+
+    def test_normal_alert_is_not_stale(self):
+        self.assertFalse(weather_monitor._is_stale_alert(
+            self._row(message_type='Alert', text='Tornado Warning (Severe)')))
+
+    def test_empty_row_is_not_stale(self):
+        self.assertFalse(weather_monitor._is_stale_alert({}))
+
+
+class TestAggregateEscalationAlerts(unittest.TestCase):
+    """Tests for the aggregate_escalation_alerts() function."""
+
+    def _row(self, location='LOC A', event_type='Tornado Warning', severity='Severe',
+             effective='2026-07-25T10:00:00+00:00', expires='2026-07-25T11:00:00+00:00',
+             issue_time='', message_type='Alert', description='', summary='', text=''):
+        return {
+            'location': location,
+            'event_type': event_type,
+            'severity': severity,
+            'effective': effective,
+            'expires': expires,
+            'issue_time': issue_time,
+            'message_type': message_type,
+            'description': description,
+            'summary': summary,
+            'text': text,
+        }
+
+    # ------------------------------------------------------------------
+    # Basic grouping and [NEW] tag
+    # ------------------------------------------------------------------
+
+    def test_single_alert_tagged_new(self):
+        rows = [self._row()]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result[0]['threats']), 1)
+        self.assertEqual(result[0]['threats'][0]['tag'], '[NEW]')
+
+    def test_single_alert_preserves_fields(self):
+        rows = [self._row(event_type='Flood Warning', severity='Moderate')]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        threat = result[0]['threats'][0]
+        self.assertEqual(threat['event_type'], 'Flood Warning')
+        self.assertEqual(threat['severity'], 'Moderate')
+
+    def test_two_different_events_same_location_both_new(self):
+        rows = [
+            self._row(event_type='Tornado Warning', severity='Severe'),
+            self._row(event_type='Flood Warning', severity='Moderate'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['total_threats'], 2)
+        tags = {t['tag'] for t in result[0]['threats']}
+        self.assertEqual(tags, {'[NEW]'})
+
+    # ------------------------------------------------------------------
+    # [UPDATED] / [EXTENDED] collapse logic
+    # ------------------------------------------------------------------
+
+    def test_same_event_two_records_same_expiry_tagged_updated(self):
+        rows = [
+            self._row(issue_time='2026-07-25T09:00:00+00:00',
+                      expires='2026-07-25T11:00:00+00:00'),
+            self._row(issue_time='2026-07-25T10:00:00+00:00',
+                      expires='2026-07-25T11:00:00+00:00'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        self.assertEqual(result[0]['total_threats'], 1)
+        self.assertEqual(result[0]['threats'][0]['tag'], '[UPDATED]')
+
+    def test_same_event_two_records_later_expiry_tagged_extended(self):
+        rows = [
+            self._row(issue_time='2026-07-25T09:00:00+00:00',
+                      expires='2026-07-25T11:00:00+00:00'),
+            self._row(issue_time='2026-07-25T10:00:00+00:00',
+                      expires='2026-07-25T13:00:00+00:00'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        threat = result[0]['threats'][0]
+        self.assertEqual(threat['tag'], '[EXTENDED]')
+        self.assertIsNotNone(threat['note'])
+        self.assertIn('→', threat['note'])
+
+    def test_extended_note_contains_original_and_new_expiry(self):
+        rows = [
+            self._row(issue_time='2026-07-25T09:00:00+00:00',
+                      expires='2026-07-25T11:00:00+00:00'),
+            self._row(issue_time='2026-07-25T10:00:00+00:00',
+                      expires='2026-07-25T15:00:00+00:00'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        note = result[0]['threats'][0]['note']
+        self.assertIn('2026-07-25T11:00:00+00:00', note)
+        self.assertIn('2026-07-25T15:00:00+00:00', note)
+
+    # ------------------------------------------------------------------
+    # Stale/cancel filtering
+    # ------------------------------------------------------------------
+
+    def test_canceled_alert_excluded(self):
+        rows = [self._row(message_type='Cancel')]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        self.assertEqual(result, [])
+
+    def test_only_stale_alerts_location_excluded(self):
+        rows = [
+            self._row(message_type='Cancel'),
+            self._row(description='This has been superseded.'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        self.assertEqual(result, [])
+
+    def test_mixed_stale_and_active_keeps_active(self):
+        rows = [
+            self._row(event_type='Tornado Warning', message_type='Cancel'),
+            self._row(event_type='Flood Warning', message_type='Alert'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['threats'][0]['event_type'], 'Flood Warning')
+
+    # ------------------------------------------------------------------
+    # Severity sorting within a location
+    # ------------------------------------------------------------------
+
+    def test_threats_sorted_by_severity_descending(self):
+        rows = [
+            self._row(event_type='Wind Advisory', severity='Minor'),
+            self._row(event_type='Tornado Warning', severity='Severe'),
+            self._row(event_type='Flood Warning', severity='Moderate'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        severities = [t['severity'] for t in result[0]['threats']]
+        self.assertEqual(severities, ['Severe', 'Moderate', 'Minor'])
+
+    # ------------------------------------------------------------------
+    # Location sorting
+    # ------------------------------------------------------------------
+
+    def test_locations_sorted_by_threat_count_descending(self):
+        rows = [
+            self._row(location='LOC A', event_type='Tornado Warning', severity='Severe'),
+            self._row(location='LOC B', event_type='Tornado Warning', severity='Severe'),
+            self._row(location='LOC B', event_type='Flood Warning', severity='Moderate'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        self.assertEqual(result[0]['location'], 'LOC B')
+        self.assertEqual(result[1]['location'], 'LOC A')
+
+    def test_location_tiebreak_by_max_severity(self):
+        rows = [
+            self._row(location='LOC A', event_type='Tornado Warning', severity='Moderate'),
+            self._row(location='LOC B', event_type='Tornado Warning', severity='Severe'),
+        ]
+        result = weather_monitor.aggregate_escalation_alerts(rows)
+        self.assertEqual(result[0]['location'], 'LOC B')
+
+    def test_empty_input_returns_empty(self):
+        self.assertEqual(weather_monitor.aggregate_escalation_alerts([]), [])
+
+    # ------------------------------------------------------------------
+    # parse_nws_alerts produces new fields
+    # ------------------------------------------------------------------
+
+    def test_parse_nws_alerts_includes_message_type_and_issue_time(self):
+        features = [
+            {
+                'id': 'https://api.weather.gov/alerts/NWS-TEST-1',
+                'properties': {
+                    'event': 'Tornado Warning',
+                    'severity': 'Severe',
+                    'areaDesc': 'Test County',
+                    'messageType': 'Update',
+                    'sent': '2026-07-25T10:00:00+00:00',
+                    'description': 'A tornado warning is in effect.',
+                    'summary': '',
+                },
+            }
+        ]
+        alerts = weather_monitor.parse_nws_alerts(features)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]['message_type'], 'Update')
+        self.assertEqual(alerts[0]['issue_time'], '2026-07-25T10:00:00+00:00')
+        self.assertEqual(alerts[0]['description'], 'A tornado warning is in effect.')
+
+
 if __name__ == "__main__":
     unittest.main()

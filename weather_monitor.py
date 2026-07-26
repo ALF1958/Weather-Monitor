@@ -857,6 +857,10 @@ def parse_nws_alerts(features):
         effective = props.get('effective', '')
         expires = props.get('expires', '')
         area_desc = props.get('areaDesc', 'Unknown area')
+        message_type = props.get('messageType', '')
+        issue_time = props.get('sent', '') or props.get('onset', '')
+        description = props.get('description', '')
+        summary = props.get('summary', '')
         alert_id = build_nws_alert_id(feature, props, event, effective, expires, area_desc)
 
         event_lower = event.lower()
@@ -879,6 +883,10 @@ def parse_nws_alerts(features):
                 'area': area_desc,
                 'effective': effective,
                 'expires': expires,
+                'message_type': message_type,
+                'issue_time': issue_time,
+                'description': description,
+                'summary': summary,
             })
             logger.info(f"Critical alert identified: {event} for {area_desc}")
         else:
@@ -1112,19 +1120,172 @@ This is an automated message from Weather Monitor.
         return False
 
 
+def _is_stale_alert(row):
+    """Return True if an alert row should be treated as stale or inactive.
+
+    An alert is stale when its message_type is 'Cancel' (case-insensitive) or
+    when the combined text fields contain words that indicate it has been
+    superseded, replaced, or cancelled.
+    """
+    message_type = (row.get('message_type', '') or '').strip().lower()
+    if message_type == 'cancel':
+        return True
+    stale_keywords = ('superseded', 'replaced', 'canceled', 'cancelled')
+    combined_text = ' '.join([
+        row.get('description', '') or '',
+        row.get('summary', '') or '',
+        row.get('text', '') or '',
+    ]).lower()
+    return any(kw in combined_text for kw in stale_keywords)
+
+
+def aggregate_escalation_alerts(rows):
+    """Group, deduplicate, and sort escalation alert rows for email formatting.
+
+    Takes a flat list of alert row dicts (each with at least 'location' and
+    'event_type') and returns a list of location dicts, each containing a
+    'threats' list of collapsed, tagged alert entries.
+
+    Tags applied per event type within a location:
+      [NEW]      - single active record for this event type.
+      [UPDATED]  - multiple records; newest record's expiry is not later.
+      [EXTENDED] - multiple records; newest record's expiry is later.
+
+    Stale/cancelled alerts (message_type == 'Cancel' or text indicating
+    superseded/replaced/canceled) are excluded before collapsing.
+
+    Locations are sorted by total active threat count (descending), then by
+    highest severity rank (descending).  Threats within each location are
+    sorted by severity rank (descending).
+    """
+    # 1. Group rows by location
+    by_location = {}
+    for row in rows:
+        loc = row.get('location', 'Unknown')
+        by_location.setdefault(loc, []).append(row)
+
+    location_results = []
+
+    for loc_name, loc_rows in by_location.items():
+        # 2. Filter stale/cancel records
+        active_rows = [r for r in loc_rows if not _is_stale_alert(r)]
+        if not active_rows:
+            continue
+
+        # 3. Group active rows by event type (case-insensitive key)
+        by_event = {}
+        for row in active_rows:
+            event_type = (row.get('event_type') or row.get('event', 'Unknown')).strip()
+            event_key = event_type.lower()
+            by_event.setdefault(event_key, []).append(row)
+
+        threats = []
+        for _event_key, event_rows in by_event.items():
+            # Preserve original casing from the first row's event_type
+            display_event = (
+                event_rows[0].get('event_type') or event_rows[0].get('event', 'Unknown')
+            ).strip()
+
+            if len(event_rows) == 1:
+                row = event_rows[0]
+                threat = {
+                    'event_type': display_event,
+                    'severity': row.get('severity', 'Unknown'),
+                    'tag': '[NEW]',
+                    'effective': row.get('effective', ''),
+                    'expires': row.get('expires', ''),
+                    'original_expires': None,
+                    'note': None,
+                }
+            else:
+                # Sort ascending by issue_time (preferred) then effective to find newest
+                sorted_rows = sorted(
+                    event_rows,
+                    key=lambda r: r.get('issue_time', '') or r.get('effective', '') or '',
+                )
+                oldest = sorted_rows[0]
+                newest = sorted_rows[-1]
+
+                oldest_expires = oldest.get('expires', '') or ''
+                newest_expires = newest.get('expires', '') or ''
+
+                if newest_expires and oldest_expires and newest_expires > oldest_expires:
+                    tag = '[EXTENDED]'
+                    note = f"Original expiry: {oldest_expires} \u2192 Updated: {newest_expires}"
+                    original_expires = oldest_expires
+                else:
+                    tag = '[UPDATED]'
+                    note = None
+                    original_expires = None
+
+                threat = {
+                    'event_type': display_event,
+                    'severity': newest.get('severity', 'Unknown'),
+                    'tag': tag,
+                    'effective': newest.get('effective', ''),
+                    'expires': newest.get('expires', ''),
+                    'original_expires': original_expires,
+                    'note': note,
+                }
+
+            threats.append(threat)
+
+        # 4. Sort threats by severity descending
+        threats.sort(
+            key=lambda t: SEVERITY_RANK.get((t.get('severity') or 'unknown').lower(), 0),
+            reverse=True,
+        )
+
+        max_sev = max(
+            (SEVERITY_RANK.get((t.get('severity') or 'unknown').lower(), 0) for t in threats),
+            default=0,
+        )
+        location_results.append({
+            'location': loc_name,
+            'threats': threats,
+            'total_threats': len(threats),
+            'max_severity_rank': max_sev,
+        })
+
+    # 5. Sort locations: total threats descending, then max severity rank descending
+    location_results.sort(
+        key=lambda x: (x['total_threats'], x['max_severity_rank']),
+        reverse=True,
+    )
+
+    return location_results
+
+
 def send_immediate_escalation_email(sender_email, sender_password, recipient_emails, escalation_rows):
     """Send one immediate escalation alert email for materially worsened risk."""
     try:
+        aggregated = aggregate_escalation_alerts(escalation_rows)
+        location_count = len(aggregated)
+
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = ', '.join(recipient_emails)
-        msg['Subject'] = f"🚨 Weather Monitor - Immediate Escalation Alert ({len(escalation_rows)} locations)"
+        msg['Subject'] = f"🚨 Weather Monitor - Immediate Escalation Alert ({location_count} locations)"
 
         lines = []
-        for idx, row in enumerate(escalation_rows, start=1):
-            lines.append(f"{idx}. {row['location']}")
-            lines.append(f"   Event: {row['event_type']}")
-            lines.append(f"   {row['text'].replace(chr(10), chr(10) + '   ')}")
+        for idx, loc in enumerate(aggregated, start=1):
+            loc_name = loc['location']
+            threats = loc['threats']
+            threat_count = loc['total_threats']
+            noun = 'threat' if threat_count == 1 else 'threats'
+            lines.append(f"{idx}. {loc_name}  [{threat_count} active {noun}]")
+            for threat in threats:
+                tag = threat['tag']
+                event_type = threat['event_type']
+                severity = threat.get('severity', 'Unknown')
+                effective = threat.get('effective', '')
+                expires = threat.get('expires', '')
+                note = threat.get('note')
+                lines.append(f"   \u2022 {tag} {event_type} | Severity: {severity}")
+                if effective or expires:
+                    lines.append(f"     Effective: {effective} | Expires: {expires}")
+                if note:
+                    lines.append(f"     {note}")
             lines.append("")
 
         body = f"""
@@ -1132,12 +1293,11 @@ WEATHER MONITOR - IMMEDIATE ESCALATION ALERT
 {'=' * 50}
 
 Time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}
-Locations with escalations: {len(escalation_rows)}
+Active threat locations: {location_count}
 
-Details:
 {chr(10).join(lines)}
-
-This is an automated alert from Weather Monitor.
+\u2014
+This is an automated alert from Weather Monitor. Review NWS alerts at weather.gov.
 """
 
         msg.attach(MIMEText(body, 'plain'))
@@ -1147,7 +1307,7 @@ This is an automated alert from Weather Monitor.
             server.login(sender_email, sender_password)
             server.send_message(msg)
 
-        logger.info(f"Immediate escalation email sent with {len(escalation_rows)} alert entries")
+        logger.info(f"Immediate escalation email sent with {location_count} locations")
         return True
     except Exception as e:
         logger.error(f"Failed to send immediate escalation email: {e}")
@@ -1469,7 +1629,14 @@ def main():
                             immediate_email_rows.append({
                                 'location': location_name,
                                 'event_type': alert_data.get('event_type', 'NWS Alert'),
+                                'severity': alert_data.get('severity', 'Unknown'),
                                 'text': alert_data.get('text', ''),
+                                'effective': alert_data.get('effective', ''),
+                                'expires': alert_data.get('expires', ''),
+                                'issue_time': alert_data.get('issue_time', ''),
+                                'message_type': alert_data.get('message_type', ''),
+                                'description': alert_data.get('description', ''),
+                                'summary': alert_data.get('summary', ''),
                             })
                         for alert_key in location_new_alert_keys:
                             sent_alerts[alert_key] = now_utc.isoformat()
