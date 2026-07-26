@@ -1273,7 +1273,7 @@ def send_immediate_escalation_email(sender_email, sender_password, recipient_ema
             threats = loc['threats']
             threat_count = loc['total_threats']
             noun = 'threat' if threat_count == 1 else 'threats'
-            lines.append(f"{idx}. {loc_name}  [{threat_count} active {noun}]")
+            lines.append(f"{idx}. {loc_name} [{threat_count} active {noun}]")
             for threat in threats:
                 tag = threat['tag']
                 event_type = threat['event_type']
