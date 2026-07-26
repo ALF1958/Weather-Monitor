@@ -1211,7 +1211,7 @@ def aggregate_escalation_alerts(rows):
 
                 if newest_expires and oldest_expires and newest_expires > oldest_expires:
                     tag = '[EXTENDED]'
-                    note = f"Original expiry: {oldest_expires} \u2192 Updated: {newest_expires}"
+                    note = f"Original expiry: {oldest_expires} -> Updated: {newest_expires}"
                     original_expires = oldest_expires
                 else:
                     tag = '[UPDATED]'
@@ -1296,7 +1296,7 @@ Time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}
 Active threat locations: {location_count}
 
 {chr(10).join(lines)}
-\u2014
+---
 This is an automated alert from Weather Monitor. Review NWS alerts at weather.gov.
 """
 
