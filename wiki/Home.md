@@ -34,6 +34,7 @@ Weather-Monitor is an automated system that watches for dangerous weather at mul
 - Sends a **daily digest email** once per day summarizing any elevated risk across all locations (default time: 11:00 UTC).
 - Sends an **immediate escalation email** only when an active alert suddenly gets worse — this keeps your inbox quiet.
 - Runs automatically via **GitHub Actions** every 15 minutes. No server or hosting is needed beyond Railway or similar free-tier cloud, or you can run it entirely on GitHub Actions.
+- Persists key monitor state files in GitHub Actions cache so duplicate immediate alerts are avoided between scheduled runs.
 - All settings can be controlled through **environment variables**, so no sensitive information needs to be stored in a file.
 
 ---

@@ -32,9 +32,63 @@ on:
         options:
           - 'false'
           - 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weather-monitor-scheduled
+  cancel-in-progress: false
 ```
 
 The `cron: '*/15 * * * *'` line means "run every 15 minutes". A cron expression is a standard way to describe a recurring schedule.
+
+`concurrency` prevents overlapping runs. This matters when a run occasionally takes longer than expected.
+
+---
+
+## State Persistence (Important)
+
+GitHub-hosted runners are temporary. They do **not** keep files between runs by default.
+
+Weather-Monitor uses local JSON state files for deduplication and digest timing:
+
+- `monitor_state.json`
+- `sent_alerts.json`
+- `nws_points_cache.json`
+
+The workflow now restores these files at the start of each run and saves them at the end using `actions/cache`.
+
+Why this matters:
+
+- Without restored state, immediate escalation detection can behave like every run is the first run.
+- Daily digest history (`last_digest_date_utc`) can be lost, which can break once-per-day behavior.
+
+---
+
+## Required Secrets
+
+Set these in **Settings → Secrets and variables → Actions**:
+
+- `OPENWEATHERMAP_API_KEY`
+- `SENDER_EMAIL`
+- `SENDER_PASSWORD`
+- `RECIPIENT_EMAILS`
+- `NWS_CONTACT` (recommended)
+
+---
+
+## Recommended Workflow Environment Settings
+
+The workflow sets these explicitly:
+
+- `DAILY_DIGEST_ENABLED=true`
+- `DAILY_DIGEST_HOUR_UTC=11`
+- `DIGEST_SEND_IF_EMPTY=true`
+- `IMMEDIATE_ALERTS_ENABLED=true`
+- `IMMEDIATE_ESCALATION_ONLY=true`
+
+These defaults are tuned to avoid noisy duplicate immediate emails while still guaranteeing a daily digest email.
 
 ---
 
@@ -134,6 +188,7 @@ env:
   SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
   SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
   RECIPIENT_EMAILS: ${{ secrets.RECIPIENT_EMAILS }}
+  NWS_CONTACT: ${{ secrets.NWS_CONTACT }}
 ```
 
 The `${{ secrets.NAME }}` syntax tells GitHub Actions to look up the secret by name and inject it. The actual value is never shown in logs — it is masked automatically.
