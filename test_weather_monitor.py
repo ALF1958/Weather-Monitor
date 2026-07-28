@@ -503,6 +503,9 @@ class TestLoadConfig(unittest.TestCase):
                 cfg = weather_monitor.load_config()
         self.assertIsInstance(cfg['locations'], list)
         self.assertGreater(len(cfg['locations']), 0)
+        location_names = {location['name'] for location in cfg['locations']}
+        self.assertIn('TSC FT LEONARD WOOD', location_names)
+        self.assertNotIn('TSC FT LEONDARDWOOD', location_names)
 
     def test_missing_config_file_falls_back_to_env_and_defaults(self):
         """A missing config file is handled gracefully; env vars and defaults still apply."""
