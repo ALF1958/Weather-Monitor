@@ -944,6 +944,176 @@ def build_alert_dedupe_key(event, headline, area_desc, effective, expires):
     return hashlib.sha256(source.encode('utf-8')).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# OpenWeatherMap helpers (OCONUS — non-US locations)
+# ---------------------------------------------------------------------------
+
+def get_openweather_data(lat, lon, api_key, units='imperial'):
+    """Fetch OpenWeatherMap One Call 3.0 payload for one location.
+
+    Used for non-US (OCONUS) locations where NWS data is not available.
+    Returns the full parsed JSON response dict.
+
+    Parameters:
+        lat: Latitude of the location.
+        lon: Longitude of the location.
+        api_key: OpenWeatherMap API key (OPENWEATHERMAP_API_KEY).
+        units: Unit system — 'imperial' (default), 'metric', or 'standard'.
+
+    Raises:
+        ValueError: When api_key is missing.
+        requests.HTTPError: On non-2xx HTTP response.
+    """
+    if not api_key:
+        raise ValueError(
+            "OPENWEATHERMAP_API_KEY is required for OCONUS (non-US) locations"
+        )
+
+    url = "https://api.openweathermap.org/data/3.0/onecall"
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "appid": api_key,
+        "units": units,
+        "exclude": "minutely",
+    }
+
+    response = requests.get(url, params=params, timeout=15)
+    response.raise_for_status()
+    return response.json()
+
+
+def parse_openweather_alerts(payload, location_name):
+    """Normalize OpenWeatherMap alerts to the internal alert schema.
+
+    Converts OWM ``alerts`` entries (if any) into the same dict shape used
+    by ``parse_nws_alerts`` so the rest of the pipeline (dedupe, escalation,
+    email) can handle them without modification.
+
+    Parameters:
+        payload: Full OWM One Call 3.0 response dict.
+        location_name: Human-readable location name (used as area label and
+            in the deterministic alert ID).
+
+    Returns:
+        List of normalized alert dicts.
+    """
+    normalized = []
+
+    for alert in (payload.get('alerts') or []):
+        event = alert.get('event', 'Weather Alert')
+        sender = alert.get('sender_name', 'OpenWeatherMap')
+        description = alert.get('description', '') or ''
+
+        start_ts = alert.get('start')
+        end_ts = alert.get('end')
+
+        effective = datetime.fromtimestamp(start_ts, UTC).isoformat() if start_ts else ''
+        expires = datetime.fromtimestamp(end_ts, UTC).isoformat() if end_ts else ''
+
+        event_lower = event.lower()
+        if any(k in event_lower for k in ('warning', 'hurricane', 'tornado')):
+            severity = 'Severe'
+        else:
+            severity = 'Moderate'
+
+        dedupe_key = build_alert_dedupe_key(
+            event=event,
+            headline=sender,
+            area_desc=location_name,
+            effective=effective,
+            expires=expires,
+        )
+
+        alert_id_source = json.dumps(
+            {
+                'event': event,
+                'sender': sender,
+                'effective': effective,
+                'expires': expires,
+                'location': location_name,
+            },
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+        alert_id = f"owm-{hashlib.sha256(alert_id_source.encode('utf-8')).hexdigest()}"
+
+        text = f"{event} ({severity})"
+        text += f"\nSource: {sender}"
+        if effective or expires:
+            text += f"\nEffective: {effective} | Expires: {expires}"
+        if description:
+            text += f"\n{description}"
+
+        normalized.append({
+            'id': alert_id,
+            'dedupe_key': dedupe_key,
+            'event_type': event,
+            'severity': severity,
+            'text': text,
+            'area': location_name,
+            'effective': effective,
+            'expires': expires,
+            'message_type': 'Alert',
+            'issue_time': effective,
+            'description': description,
+            'summary': '',
+        })
+
+    return normalized
+
+
+def parse_openweather_risks_24h(payload):
+    """Infer 24-hour risk categories from OpenWeatherMap current/hourly/daily fields.
+
+    Mirrors ``parse_forecast_risks_24h`` but sources text from OWM weather
+    condition objects rather than NWS forecast period text.
+
+    Parameters:
+        payload: Full OWM One Call 3.0 response dict.
+
+    Returns:
+        Dict with keys: has_elevated_risk, top_categories, evidence, timeframe.
+    """
+    category_hits = {k: [] for k in FORECAST_RISK_KEYWORDS}
+
+    texts = []
+
+    current = payload.get('current') or {}
+    for w in (current.get('weather') or []):
+        texts.append(f"{w.get('main', '')} {w.get('description', '')}")
+
+    for h in (payload.get('hourly') or [])[:24]:
+        for w in (h.get('weather') or []):
+            texts.append(f"{w.get('main', '')} {w.get('description', '')}")
+
+    for d in (payload.get('daily') or [])[:2]:
+        if d.get('summary'):
+            texts.append(d.get('summary', ''))
+        for w in (d.get('weather') or []):
+            texts.append(f"{w.get('main', '')} {w.get('description', '')}")
+
+    combined = ' | '.join(t for t in texts if t).lower()
+
+    for category, keywords in FORECAST_RISK_KEYWORDS.items():
+        for kw in keywords:
+            if kw in combined:
+                category_hits[category].append(kw)
+
+    top_categories = [c for c, hits in category_hits.items() if hits][:3]
+    evidence = [
+        f"{c}: matched keywords ({', '.join(category_hits[c][:3])})"
+        for c in top_categories
+    ]
+
+    return {
+        'has_elevated_risk': bool(top_categories),
+        'top_categories': top_categories,
+        'evidence': evidence,
+        'timeframe': 'Next 24 hours',
+    }
+
+
 def send_alert_email(sender_email, sender_password, recipient_emails, location_name, conditions, alert_type='NWS Alert'):
     """Send email alert for severe weather or advisories"""
     try:
@@ -1707,22 +1877,119 @@ def main():
                     'last_change_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
                 })
             else:
-                logger.debug(f"Skipping {location_name} - only US locations use NWS alerts")
+                # Non-US location — use OpenWeatherMap One Call 3.0
+                logger.info(f"Fetching OpenWeatherMap alerts for {location_name}...")
+                try:
+                    owm_payload = get_openweather_data(
+                        lat, lon, config.get('openweathermap_api_key')
+                    )
+                except Exception as owm_err:
+                    logger.warning(
+                        f"OWM lookup failed for {location_name} ({type(owm_err).__name__}: {owm_err}). "
+                        "Check that OPENWEATHERMAP_API_KEY is set and valid for OCONUS locations."
+                    )
+                    owm_payload = {}
+
+                owm_alerts = parse_openweather_alerts(owm_payload, location_name) if owm_payload else []
+
+                current_immediate_fp = build_immediate_escalation_fingerprint(owm_alerts)
+                previous_immediate_fp = immediate_state.get(location_name)
+                location_escalation = is_immediate_escalation(previous_immediate_fp, current_immediate_fp)
+                location_new_alert_keys = []
+
+                if owm_alerts:
+                    for alert_data in owm_alerts:
+                        alert_dedupe_key = alert_data.get('dedupe_key') or alert_data.get('id', '')
+                        alert_key = f"{location_name}_{alert_dedupe_key}"
+                        if alert_key not in sent_alerts:
+                            location_new_alert_keys.append(alert_key)
+                        else:
+                            logger.debug(f"Alert already processed: {alert_key}")
+
+                    should_add_immediate_rows = (
+                        (immediate_escalation_only and location_escalation) or
+                        (not immediate_escalation_only and bool(location_new_alert_keys))
+                    )
+                    if immediate_alerts_enabled and should_add_immediate_rows:
+                        for alert_data in owm_alerts:
+                            immediate_email_rows.append({
+                                'location': location_name,
+                                'event_type': alert_data.get('event_type', 'Weather Alert'),
+                                'severity': alert_data.get('severity', 'Unknown'),
+                                'text': alert_data.get('text', ''),
+                                'effective': alert_data.get('effective', ''),
+                                'expires': alert_data.get('expires', ''),
+                                'issue_time': alert_data.get('issue_time', ''),
+                                'message_type': alert_data.get('message_type', ''),
+                                'description': alert_data.get('description', ''),
+                                'summary': alert_data.get('summary', ''),
+                            })
+                        for alert_key in location_new_alert_keys:
+                            sent_alerts[alert_key] = now_utc.isoformat()
+                            alerts_sent += 1
+                        immediate_state[location_name] = current_immediate_fp
+                    elif immediate_escalation_only and location_escalation:
+                        logger.info(
+                            f"Escalation detected for {location_name}, but immediate alerts are disabled by config."
+                        )
+                    else:
+                        logger.info(f"No immediate escalation for {location_name}")
+                else:
+                    logger.info(f"No OWM alerts for {location_name}")
+                    immediate_state.pop(location_name, None)
+
+                risk_summary = parse_openweather_risks_24h(owm_payload) if owm_payload else {
+                    'has_elevated_risk': False,
+                    'top_categories': [],
+                    'evidence': [],
+                    'timeframe': 'Next 24 hours',
+                }
+                digest_fingerprints[location_name] = build_risk_fingerprint(risk_summary)
+
+                if risk_summary['has_elevated_risk']:
+                    digest_rows.append({
+                        'location': location_name,
+                        'top_categories': risk_summary['top_categories'],
+                        'evidence': risk_summary['evidence'],
+                        'timeframe': risk_summary['timeframe'],
+                    })
+
+                location_weight = float(location.get('priority_weight', 1.0))
+                priority_score, priority_band, loc_status, confidence = score_location_priority(
+                    owm_alerts, risk_summary, location_escalation, location_weight
+                )
+                recommended_action = get_recommended_action(priority_band, loc_status)
+                current_signatures[location_name] = {
+                    'band': priority_band,
+                    'status': loc_status,
+                    'score': priority_score,
+                }
+                dash_alerts = [
+                    {
+                        'id': a.get('id', ''),
+                        'event_type': a.get('event_type', ''),
+                        'severity': a.get('severity', ''),
+                        'area': a.get('area', ''),
+                        'effective': a.get('effective', ''),
+                        'expires': a.get('expires', ''),
+                    }
+                    for a in owm_alerts
+                ]
                 locations_payload.append({
                     'location': location_name,
                     'lat': lat,
                     'lon': lon,
                     'country': country,
-                    'status': 'normal',
-                    'priority_score': 0,
-                    'priority_band': 'low',
-                    'confidence': 0.0,
-                    'risk_categories': [],
-                    'risk_evidence': [],
-                    'timeframe': '',
-                    'active_alerts_count': 0,
-                    'active_alerts': [],
-                    'recommended_action': get_recommended_action('low', 'normal'),
+                    'status': loc_status,
+                    'priority_score': priority_score,
+                    'priority_band': priority_band,
+                    'confidence': confidence,
+                    'risk_categories': risk_summary.get('top_categories', []),
+                    'risk_evidence': risk_summary.get('evidence', []),
+                    'timeframe': risk_summary.get('timeframe', ''),
+                    'active_alerts_count': len(owm_alerts),
+                    'active_alerts': dash_alerts,
+                    'recommended_action': recommended_action,
                     'last_change_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
                 })
         except Exception as exc:
