@@ -14,7 +14,22 @@
   "immediate_escalation_only": true,
 
   "locations": [
-    {"name": "TSC HAWAII",          "lat": 21.483,  "lon": -158.0827, "country": "US"},
+    {
+      "name": "TSC HAWAII",
+      "lat": 21.483,
+      "lon": -158.0827,
+      "country": "US",
+      "priority_weight": 1.25,
+      "hazard_weights": {
+        "Extreme Heat/Cold": 2.0,
+        "High Wind": 1.25
+      },
+      "operational_vulnerabilities": [
+        "HVAC reliability issue in temperature-controlled workspace",
+        "Work areas should stay close to 68 degrees"
+      ],
+      "leadership_note": "Heat risk should be treated as a higher operational concern until HVAC repairs are complete."
+    },
     {"name": "TSC CORPUS CHRISTI",  "lat": 27.6905, "lon": -97.2894,  "country": "US"},
     {"name": "TSC FT POLK",         "lat": 31.033,  "lon": -93.183,   "country": "US"},
     {"name": "TSC FT HOOD",         "lat": 31.133,  "lon": -97.7663,  "country": "US"},

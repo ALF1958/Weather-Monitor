@@ -38,7 +38,8 @@ There are four email types the system can send:
 
 **What it contains:**
 - A count of how many monitored locations have elevated weather risk in the next 24 hours.
-- For each at-risk location: the risk categories identified (e.g., "Flooding", "Severe Thunderstorms"), the timeframe, and a short description of what the forecast says.
+- For each at-risk location: the priority band and score, the risk categories identified (e.g., "Flooding", "Severe Thunderstorms"), the timeframe, and a short description of what the forecast says.
+- If configured, it also includes site-specific operational concerns and a short leadership note explaining why that location matters more.
 
 **Example body:**
 ```

@@ -99,7 +99,11 @@ If you are using a `config.json` file in the repository, open it and add a new e
 | `lat` | Yes | Latitude — the first number from Google Maps. |
 | `lon` | Yes | Longitude — the second number from Google Maps (negative for most of the US). |
 | `country` | Yes | Two-letter country code. Use `US` for all United States locations. Use `DE` for Germany, `JP` for Japan, `KR` for South Korea, etc. |
-| `weight` | No | Optional priority multiplier. Default is `1.0`. Use `2.0` to double the priority score for a critical site. |
+| `priority_weight` | No | Optional whole-site priority multiplier. Default is `1.0`. Use `2.0` to double the score for a generally critical site. |
+| `weight` | No | Older name for `priority_weight`. Still supported, but `priority_weight` is the preferred field. |
+| `hazard_weights` | No | Optional per-hazard multipliers. Use this when one weather risk matters more at a specific site. |
+| `operational_vulnerabilities` | No | Optional list of plain-language site concerns, such as HVAC issues or flood-prone access roads. |
+| `leadership_note` | No | Optional one-line note to explain why the site deserves extra attention. |
 
 ### Step 3 — Redeploy
 
@@ -142,7 +146,7 @@ US locations generally get richer alert data because NWS provides detailed zone 
 
 ## Location Weights (Advanced)
 
-You can assign a `weight` value to a location to make it score higher in the priority ranking. This is useful when some sites are more operationally critical than others.
+You can assign a `priority_weight` value to a location to make it score higher in the priority ranking. This is useful when some sites are more operationally critical than others.
 
 ```json
 {
@@ -150,10 +154,42 @@ You can assign a `weight` value to a location to make it score higher in the pri
   "lat": 38.9,
   "lon": -77.0,
   "country": "US",
-  "weight": 2.0
+  "priority_weight": 2.0
 }
 ```
 
 A weight of `2.0` doubles the priority score. A weight of `0.5` halves it. Scores are always capped at 100.
 
 If no weight is specified, it defaults to `1.0`.
+
+## Hazard Weights and Operational Vulnerabilities
+
+If a location has a special operating condition, you can make the related weather hazard count more.
+
+Example: a site with unstable HVAC and temperature-sensitive work can treat heat as more important than normal.
+
+```json
+{
+  "name": "Temperature Controlled Site",
+  "lat": 35.0,
+  "lon": -90.0,
+  "country": "US",
+  "priority_weight": 1.25,
+  "hazard_weights": {
+    "Extreme Heat/Cold": 2.0,
+    "Flooding": 0.5
+  },
+  "operational_vulnerabilities": [
+    "HVAC unstable",
+    "Work requires a steady 68 degree indoor environment"
+  ],
+  "leadership_note": "Heat should be treated as a higher operational concern until HVAC repairs are complete."
+}
+```
+
+### What this example means
+
+- `priority_weight` makes the entire site a little more important overall.
+- `hazard_weights` makes heat count more than usual and flood risk count less than usual.
+- `operational_vulnerabilities` records the real-world issue behind the weighting.
+- `leadership_note` gives a short explanation that can be shown in summaries.
