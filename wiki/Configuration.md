@@ -124,7 +124,22 @@ When running on your own computer, you can create a `config.json` file instead o
   "immediate_alerts_enabled": true,
   "immediate_escalation_only": true,
   "locations": [
-    { "name": "My Location", "lat": 35.0, "lon": -90.0, "country": "US" }
+    {
+      "name": "My Location",
+      "lat": 35.0,
+      "lon": -90.0,
+      "country": "US",
+      "priority_weight": 1.25,
+      "hazard_weights": {
+        "Extreme Heat/Cold": 2.0,
+        "Flooding": 0.5
+      },
+      "operational_vulnerabilities": [
+        "HVAC unstable",
+        "Work requires a steady 68 degree indoor environment"
+      ],
+      "leadership_note": "Heat should be treated as a higher operational concern for this site."
+    }
   ]
 }
 ```
@@ -132,3 +147,31 @@ When running on your own computer, you can create a `config.json` file instead o
 > ⚠️ **Never commit a config.json with real passwords or API keys to GitHub.** Use GitHub Secrets instead (see [Getting Started](Getting-Started)).
 
 If both a config file and an environment variable exist for the same setting, the **environment variable wins**.
+
+## Location-Specific Weighting
+
+Each location can now carry its own operational context. This lets the system rank weather by **business impact**, not just by meteorological severity.
+
+### Recommended location fields
+
+| Field | Default | What it does |
+|---|---|---|
+| `priority_weight` | `1.0` | Raises or lowers the whole score for that site. Use this when the site is generally more important than others. |
+| `weight` | `1.0` | Older name for `priority_weight`. Still supported for backward compatibility, but `priority_weight` is the preferred name going forward. |
+| `hazard_weights` | `{}` | Lets you raise or lower specific hazards for that site. Example: make `Extreme Heat/Cold` count more than `Flooding`. |
+| `operational_vulnerabilities` | `[]` | Plain-language site concerns, such as HVAC issues or generator limits. These appear in the leadership-oriented output. |
+| `leadership_note` | `""` | Optional one-line explanation for senior leadership. |
+
+### Supported hazard names
+
+Use the forecast category names shown below inside `hazard_weights`:
+
+- `Severe Thunderstorms`
+- `Flooding`
+- `Winter Weather`
+- `Extreme Heat/Cold`
+- `High Wind`
+- `Fire Weather`
+- `Poor Air Quality`
+
+Short names like `heat`, `cold`, `wind`, and `flooding` are also accepted, but the full names above are the clearest choice.

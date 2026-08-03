@@ -168,6 +168,238 @@ FORECAST_RISK_KEYWORDS = {
     ),
 }
 
+HAZARD_CATEGORY_ALIASES = {
+    'severe thunderstorms': 'Severe Thunderstorms',
+    'severe thunderstorm': 'Severe Thunderstorms',
+    'thunderstorms': 'Severe Thunderstorms',
+    'thunderstorm': 'Severe Thunderstorms',
+    'storms': 'Severe Thunderstorms',
+    'storm': 'Severe Thunderstorms',
+    'tornado': 'Severe Thunderstorms',
+    'hurricane': 'Severe Thunderstorms',
+    'tropical storm': 'Severe Thunderstorms',
+    'flooding': 'Flooding',
+    'flood': 'Flooding',
+    'winter weather': 'Winter Weather',
+    'winter': 'Winter Weather',
+    'snow': 'Winter Weather',
+    'ice': 'Winter Weather',
+    'heat': 'Extreme Heat/Cold',
+    'extreme heat': 'Extreme Heat/Cold',
+    'cold': 'Extreme Heat/Cold',
+    'extreme cold': 'Extreme Heat/Cold',
+    'freeze': 'Extreme Heat/Cold',
+    'high wind': 'High Wind',
+    'wind': 'High Wind',
+    'fire weather': 'Fire Weather',
+    'fire': 'Fire Weather',
+    'air quality': 'Poor Air Quality',
+    'air': 'Poor Air Quality',
+    'smoke': 'Poor Air Quality',
+}
+
+ALERT_HAZARD_KEYWORDS = {
+    'Severe Thunderstorms': (
+        'tornado',
+        'severe thunderstorm',
+        'thunderstorm',
+        'hurricane',
+        'tropical storm',
+        'hail',
+        'lightning',
+    ),
+    'Flooding': (
+        'flood',
+    ),
+    'Winter Weather': (
+        'winter',
+        'blizzard',
+        'snow',
+        'ice',
+        'freezing rain',
+        'sleet',
+        'wind chill',
+        'avalanche',
+    ),
+    'Extreme Heat/Cold': (
+        'heat',
+        'cold',
+        'freeze',
+        'frost',
+    ),
+    'High Wind': (
+        'wind',
+        'gust',
+    ),
+    'Fire Weather': (
+        'red flag',
+        'fire weather',
+        'fire',
+    ),
+    'Poor Air Quality': (
+        'air quality',
+        'smoke',
+        'ozone',
+    ),
+}
+
+
+def canonicalize_hazard_category(name):
+    """Return the canonical hazard category name used by the scoring system."""
+    if not name:
+        return None
+    normalized = ' '.join(str(name).strip().lower().split())
+    if not normalized:
+        return None
+    for category in FORECAST_RISK_KEYWORDS:
+        if normalized == category.lower():
+            return category
+    return HAZARD_CATEGORY_ALIASES.get(normalized)
+
+
+def _read_numeric_weight(value, default=1.0, minimum=0.0):
+    """Parse a numeric weight and clamp invalid values back to a safe default."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
+        return default
+    return parsed
+
+
+def get_location_priority_profile(location):
+    """Extract location-specific weighting and operational context from config."""
+    priority_weight = _read_numeric_weight(
+        location.get('priority_weight', location.get('weight', 1.0)),
+        default=1.0,
+        minimum=0.0,
+    )
+
+    raw_hazard_weights = location.get('hazard_weights') or location.get('risk_weights') or {}
+    hazard_weights = {}
+    if isinstance(raw_hazard_weights, dict):
+        for raw_name, raw_weight in raw_hazard_weights.items():
+            canonical_name = canonicalize_hazard_category(raw_name)
+            if not canonical_name:
+                logger.warning(
+                    f"Ignoring unknown hazard weight '{raw_name}' for "
+                    f"{location.get('name', 'Unknown')}"
+                )
+                continue
+            hazard_weights[canonical_name] = _read_numeric_weight(
+                raw_weight,
+                default=1.0,
+                minimum=0.0,
+            )
+
+    raw_vulnerabilities = location.get('operational_vulnerabilities', [])
+    if isinstance(raw_vulnerabilities, str):
+        operational_vulnerabilities = [raw_vulnerabilities.strip()] if raw_vulnerabilities.strip() else []
+    elif isinstance(raw_vulnerabilities, list):
+        operational_vulnerabilities = [
+            str(item).strip() for item in raw_vulnerabilities if str(item).strip()
+        ]
+    else:
+        operational_vulnerabilities = []
+
+    leadership_note = str(location.get('leadership_note', '') or '').strip()
+
+    return {
+        'priority_weight': priority_weight,
+        'hazard_weights': hazard_weights,
+        'operational_vulnerabilities': operational_vulnerabilities,
+        'leadership_note': leadership_note,
+    }
+
+
+def classify_alert_hazard(event_type):
+    """Map an alert event name to a configured hazard category when possible."""
+    normalized = (event_type or '').strip().lower()
+    if not normalized:
+        return None
+    for category, keywords in ALERT_HAZARD_KEYWORDS.items():
+        if any(keyword in normalized for keyword in keywords):
+            return category
+    return None
+
+
+def get_hazard_weight_multiplier(hazard_weights, category_name):
+    """Return the configured multiplier for one hazard category."""
+    canonical_name = canonicalize_hazard_category(category_name)
+    if not canonical_name:
+        return 1.0
+    return _read_numeric_weight((hazard_weights or {}).get(canonical_name, 1.0), default=1.0, minimum=0.0)
+
+
+def build_priority_reasons(
+    active_alerts,
+    risk_summary,
+    is_escalating,
+    hazard_weights=None,
+    operational_vulnerabilities=None,
+    leadership_note='',
+):
+    """Build plain-language reasons that explain why a location ranked as it did."""
+    reasons = []
+    hazard_weights = hazard_weights or {}
+    operational_vulnerabilities = operational_vulnerabilities or []
+
+    if is_escalating:
+        reasons.append("Conditions are worsening compared with the previous run.")
+
+    if active_alerts:
+        top_events = ', '.join(
+            alert.get('event_type', 'Alert')
+            for alert in active_alerts[:2]
+            if alert.get('event_type')
+        )
+        if top_events:
+            reasons.append(f"Active alerts in effect: {top_events}.")
+
+    if risk_summary.get('has_elevated_risk'):
+        reasons.append(
+            "Forecast risks identified: "
+            + ', '.join(risk_summary.get('top_categories', []))
+            + "."
+        )
+
+    amplified_categories = []
+    for category in risk_summary.get('top_categories', []):
+        weight = get_hazard_weight_multiplier(hazard_weights, category)
+        if weight > 1:
+            amplified_categories.append(f"{category} (x{weight:g})")
+
+    for alert in active_alerts:
+        category = classify_alert_hazard(alert.get('event_type', ''))
+        weight = get_hazard_weight_multiplier(hazard_weights, category)
+        if category and weight > 1:
+            amplified_label = f"{category} (x{weight:g})"
+            if amplified_label not in amplified_categories:
+                amplified_categories.append(amplified_label)
+
+    if amplified_categories:
+        amplified_text = ', '.join(amplified_categories)
+        if operational_vulnerabilities:
+            reasons.append(
+                f"Location-specific weighting boosts {amplified_text} because of: "
+                + '; '.join(operational_vulnerabilities)
+                + "."
+            )
+        else:
+            reasons.append(f"Location-specific weighting boosts {amplified_text}.")
+    elif operational_vulnerabilities:
+        reasons.append(
+            "Operational concerns noted for this location: "
+            + '; '.join(operational_vulnerabilities)
+            + "."
+        )
+
+    if leadership_note:
+        reasons.append(leadership_note)
+
+    return reasons
+
 
 def load_config():
     """Load configuration from a config file and environment variables.
@@ -1255,8 +1487,23 @@ def send_daily_digest_email(sender_email, sender_password, recipient_emails, dig
             lines = []
             for idx, row in enumerate(digest_rows, start=1):
                 lines.append(f"{idx}. {row['location']}")
+                lines.append(
+                    f"   Priority: {row.get('priority_band', 'low').title()} "
+                    f"(score {row.get('priority_score', 0)})"
+                )
                 lines.append(f"   Risks: {', '.join(row['top_categories'])}")
                 lines.append(f"   Timeframe: {row['timeframe']}")
+                if row.get('recommended_action'):
+                    lines.append(f"   Recommended action: {row['recommended_action']}")
+                if row.get('priority_reasons'):
+                    lines.append(f"   Why this matters: {row['priority_reasons'][0]}")
+                if row.get('operational_vulnerabilities'):
+                    lines.append(
+                        "   Site concerns: "
+                        + '; '.join(row['operational_vulnerabilities'])
+                    )
+                if row.get('leadership_note'):
+                    lines.append(f"   Leadership note: {row['leadership_note']}")
                 for evidence in row['evidence']:
                     lines.append(f"   - {evidence}")
                 lines.append("")
@@ -1488,7 +1735,13 @@ This is an automated alert from Weather Monitor. Review NWS alerts at weather.go
 # Executive priority engine
 # ---------------------------------------------------------------------------
 
-def score_location_priority(active_alerts, risk_summary, is_escalating, location_weight=1.0):
+def score_location_priority(
+    active_alerts,
+    risk_summary,
+    is_escalating,
+    location_weight=1.0,
+    hazard_weights=None,
+):
     """Compute deterministic priority score (0-100), band, status, and confidence.
 
     Inputs
@@ -1523,23 +1776,33 @@ def score_location_priority(active_alerts, risk_summary, is_escalating, location
       elevated   : risk_summary has_elevated_risk is True
       normal     : none of the above
     """
-    score = 0
+    score = 0.0
+    hazard_weights = hazard_weights or {}
 
     for a in active_alerts:
         sev = (a.get('severity') or 'unknown').lower()
-        score += _W_SEVERITY.get(sev, 0)
+        alert_points = float(_W_SEVERITY.get(sev, 0))
         e = (a.get('event_type') or '').lower()
         for key, bonus in _W_EVENT_BONUS.items():
             if key in e:
-                score += bonus
+                alert_points += bonus
                 break  # at most one event-type bonus per alert
+        alert_category = classify_alert_hazard(a.get('event_type', ''))
+        alert_points *= get_hazard_weight_multiplier(hazard_weights, alert_category)
+        score += alert_points
 
-    score += min(len(risk_summary.get('top_categories', [])) * _W_RISK_CAT_BONUS, _W_RISK_CAT_MAX)
+    weighted_risk_bonus = 0.0
+    max_risk_multiplier = 1.0
+    for category in risk_summary.get('top_categories', []):
+        risk_multiplier = get_hazard_weight_multiplier(hazard_weights, category)
+        weighted_risk_bonus += _W_RISK_CAT_BONUS * risk_multiplier
+        max_risk_multiplier = max(max_risk_multiplier, risk_multiplier)
+    score += min(weighted_risk_bonus, _W_RISK_CAT_MAX * max_risk_multiplier)
 
     if is_escalating:
         score += _W_ESCALATION_BONUS
 
-    score = int(min(100, round(score * location_weight)))
+    score = int(min(100, round(score * _read_numeric_weight(location_weight, default=1.0, minimum=0.0))))
 
     if score >= PRIORITY_CRITICAL_MIN:
         band = 'critical'
@@ -1753,6 +2016,11 @@ def main():
         lat = location.get('lat')
         lon = location.get('lon')
         country = location.get('country', 'XX')
+        priority_profile = get_location_priority_profile(location)
+        location_weight = priority_profile['priority_weight']
+        hazard_weights = priority_profile['hazard_weights']
+        operational_vulnerabilities = priority_profile['operational_vulnerabilities']
+        leadership_note = priority_profile['leadership_note']
 
         if lat is None or lon is None:
             logger.warning(f"Invalid coordinates for {location_name}")
@@ -1826,28 +2094,40 @@ def main():
                 risk_summary = parse_forecast_risks_24h(forecast_periods)
                 digest_fingerprints[location_name] = build_risk_fingerprint(risk_summary)
 
+                # --- Executive priority scoring for dashboard ---
+                # Optional per-location multiplier: add "priority_weight": 1.5 (or any positive
+                # float) to a location entry in config.json to amplify its score; use 0.5 to
+                # de-emphasise it.  Omit the key (or set to 1.0) for standard behaviour.
+                priority_score, priority_band, loc_status, confidence = score_location_priority(
+                    nws_alerts, risk_summary, location_escalation, location_weight, hazard_weights
+                )
+                recommended_action = get_recommended_action(priority_band, loc_status)
+                priority_reasons = build_priority_reasons(
+                    nws_alerts,
+                    risk_summary,
+                    location_escalation,
+                    hazard_weights,
+                    operational_vulnerabilities,
+                    leadership_note,
+                )
+                current_signatures[location_name] = {
+                    'band': priority_band,
+                    'status': loc_status,
+                    'score': priority_score,
+                }
                 if risk_summary['has_elevated_risk']:
                     digest_rows.append({
                         'location': location_name,
                         'top_categories': risk_summary['top_categories'],
                         'evidence': risk_summary['evidence'],
                         'timeframe': risk_summary['timeframe'],
+                        'priority_score': priority_score,
+                        'priority_band': priority_band,
+                        'recommended_action': recommended_action,
+                        'priority_reasons': priority_reasons,
+                        'operational_vulnerabilities': operational_vulnerabilities,
+                        'leadership_note': leadership_note,
                     })
-
-                # --- Executive priority scoring for dashboard ---
-                # Optional per-location multiplier: add "priority_weight": 1.5 (or any positive
-                # float) to a location entry in config.json to amplify its score; use 0.5 to
-                # de-emphasise it.  Omit the key (or set to 1.0) for standard behaviour.
-                location_weight = float(location.get('priority_weight', 1.0))
-                priority_score, priority_band, loc_status, confidence = score_location_priority(
-                    nws_alerts, risk_summary, location_escalation, location_weight
-                )
-                recommended_action = get_recommended_action(priority_band, loc_status)
-                current_signatures[location_name] = {
-                    'band': priority_band,
-                    'status': loc_status,
-                    'score': priority_score,
-                }
                 dash_alerts = [
                     {
                         'id': a.get('id', ''),
@@ -1873,6 +2153,10 @@ def main():
                     'timeframe': risk_summary.get('timeframe', ''),
                     'active_alerts_count': len(nws_alerts),
                     'active_alerts': dash_alerts,
+                    'applied_hazard_weights': hazard_weights,
+                    'operational_vulnerabilities': operational_vulnerabilities,
+                    'leadership_note': leadership_note,
+                    'priority_reasons': priority_reasons,
                     'recommended_action': recommended_action,
                     'last_change_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
                 })
@@ -1946,24 +2230,36 @@ def main():
                 }
                 digest_fingerprints[location_name] = build_risk_fingerprint(risk_summary)
 
+                priority_score, priority_band, loc_status, confidence = score_location_priority(
+                    owm_alerts, risk_summary, location_escalation, location_weight, hazard_weights
+                )
+                recommended_action = get_recommended_action(priority_band, loc_status)
+                priority_reasons = build_priority_reasons(
+                    owm_alerts,
+                    risk_summary,
+                    location_escalation,
+                    hazard_weights,
+                    operational_vulnerabilities,
+                    leadership_note,
+                )
+                current_signatures[location_name] = {
+                    'band': priority_band,
+                    'status': loc_status,
+                    'score': priority_score,
+                }
                 if risk_summary['has_elevated_risk']:
                     digest_rows.append({
                         'location': location_name,
                         'top_categories': risk_summary['top_categories'],
                         'evidence': risk_summary['evidence'],
                         'timeframe': risk_summary['timeframe'],
+                        'priority_score': priority_score,
+                        'priority_band': priority_band,
+                        'recommended_action': recommended_action,
+                        'priority_reasons': priority_reasons,
+                        'operational_vulnerabilities': operational_vulnerabilities,
+                        'leadership_note': leadership_note,
                     })
-
-                location_weight = float(location.get('priority_weight', 1.0))
-                priority_score, priority_band, loc_status, confidence = score_location_priority(
-                    owm_alerts, risk_summary, location_escalation, location_weight
-                )
-                recommended_action = get_recommended_action(priority_band, loc_status)
-                current_signatures[location_name] = {
-                    'band': priority_band,
-                    'status': loc_status,
-                    'score': priority_score,
-                }
                 dash_alerts = [
                     {
                         'id': a.get('id', ''),
@@ -1989,12 +2285,25 @@ def main():
                     'timeframe': risk_summary.get('timeframe', ''),
                     'active_alerts_count': len(owm_alerts),
                     'active_alerts': dash_alerts,
+                    'applied_hazard_weights': hazard_weights,
+                    'operational_vulnerabilities': operational_vulnerabilities,
+                    'leadership_note': leadership_note,
+                    'priority_reasons': priority_reasons,
                     'recommended_action': recommended_action,
                     'last_change_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
                 })
         except Exception as exc:
             logger.error(f"Unexpected error processing {location_name}: {exc}")
             run_errors.append(f"{location_name}: {exc}")
+
+    digest_rows.sort(
+        key=lambda row: (
+            row.get('priority_score', 0),
+            len(row.get('top_categories', [])),
+            row.get('location', ''),
+        ),
+        reverse=True,
+    )
 
     # --- Change tracking: compare current signatures against prior run ---
     band_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}

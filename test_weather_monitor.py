@@ -348,6 +348,40 @@ class TestPriorityEngine(unittest.TestCase):
         # Doubled weight should yield a higher or equal score (capped at 100)
         self.assertGreaterEqual(score_double, score_default)
 
+    def test_matching_hazard_weight_increases_forecast_risk_score(self):
+        risk = self._elevated_risk(['Extreme Heat/Cold'])
+        score_default, _, _, _ = weather_monitor.score_location_priority(
+            [], risk, False, 1.0, {}
+        )
+        score_weighted, _, _, _ = weather_monitor.score_location_priority(
+            [], risk, False, 1.0, {'Extreme Heat/Cold': 2.0}
+        )
+        self.assertGreater(score_weighted, score_default)
+
+    def test_matching_hazard_weight_increases_alert_score(self):
+        alerts = [{'event_type': 'Heat Advisory', 'severity': 'Moderate'}]
+        score_default, _, _, _ = weather_monitor.score_location_priority(
+            alerts, self._empty_risk(), False, 1.0, {}
+        )
+        score_weighted, _, _, _ = weather_monitor.score_location_priority(
+            alerts, self._empty_risk(), False, 1.0, {'Extreme Heat/Cold': 2.0}
+        )
+        self.assertGreater(score_weighted, score_default)
+
+    def test_build_priority_reasons_mentions_operational_vulnerability(self):
+        reasons = weather_monitor.build_priority_reasons(
+            [],
+            self._elevated_risk(['Extreme Heat/Cold']),
+            False,
+            {'Extreme Heat/Cold': 2.0},
+            ['HVAC unstable', 'Work requires 68 degree environment'],
+            'Temperature-controlled work increases operational impact.',
+        )
+        joined = ' '.join(reasons)
+        self.assertIn('Extreme Heat/Cold', joined)
+        self.assertIn('HVAC unstable', joined)
+        self.assertIn('Temperature-controlled work increases operational impact.', joined)
+
     # ------------------------------------------------------------------
     # get_recommended_action
     # ------------------------------------------------------------------
@@ -516,6 +550,32 @@ class TestLoadConfig(unittest.TestCase):
             cfg = weather_monitor.load_config()
         self.assertEqual(cfg['sender_email'], 'env@example.com')
         self.assertIsInstance(cfg.get('locations'), list)
+
+
+class TestLocationPriorityProfile(unittest.TestCase):
+    def test_supports_legacy_weight_and_new_hazard_fields(self):
+        profile = weather_monitor.get_location_priority_profile({
+            'name': 'Test Site',
+            'weight': 1.5,
+            'hazard_weights': {
+                'heat': 2.0,
+                'Flooding': 0.5,
+            },
+            'operational_vulnerabilities': [
+                'HVAC unstable',
+                'Must maintain 68 degree environment',
+            ],
+            'leadership_note': 'Temperature-sensitive operations are underway.',
+        })
+
+        self.assertEqual(profile['priority_weight'], 1.5)
+        self.assertEqual(profile['hazard_weights']['Extreme Heat/Cold'], 2.0)
+        self.assertEqual(profile['hazard_weights']['Flooding'], 0.5)
+        self.assertIn('HVAC unstable', profile['operational_vulnerabilities'])
+        self.assertEqual(
+            profile['leadership_note'],
+            'Temperature-sensitive operations are underway.',
+        )
 
 
 class TestIsStaleAlert(unittest.TestCase):
