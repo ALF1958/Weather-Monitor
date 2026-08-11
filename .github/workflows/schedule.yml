@@ -2,8 +2,8 @@ name: Weather Monitor - scheduled
 
 on:
   schedule:
-    # every 15 minutes
-    - cron: '*/15 * * * *'
+    # every 6 hours
+    - cron: '0 */ 6 * * *'
   workflow_dispatch:
     inputs:
       test_mode:
